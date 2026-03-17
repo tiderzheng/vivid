@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "id": "local-qwen-vl",
+      "name": "Local Qwen VL",
+      "api_base": "http://localhost:1234",
+      "api_path": "/v1/chat/completions",
+      "model": "qwen/qwen3-vl-8b",
+      "timeout": 30,
+      "group": "local",
+      "note": "Example local OpenAI-compatible vision provider",
+      "prompt": "只返回图片中的可读字幕文本",
+      "system_prompt": ""
+    }
+  ],
+  "selected_id": "local-qwen-vl"
+}

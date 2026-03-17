@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/**
+!data/.gitkeep
+configs/web_ui/preferences.json
+dist/
+build/

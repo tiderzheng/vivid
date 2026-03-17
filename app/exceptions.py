@@ -1,0 +1,2 @@
+class VividError(RuntimeError):
+    pass

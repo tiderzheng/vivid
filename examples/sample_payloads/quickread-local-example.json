@@ -1,0 +1,8 @@
+{
+  "action": "quickread",
+  "source": "D:\\videos\\demo.mp4",
+  "platform": "local",
+  "model": "small",
+  "format": "both",
+  "data_dir": "D:\\ai\\quicker_video\\Vivid\\data"
+}

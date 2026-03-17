@@ -1,0 +1,3 @@
+display_name: Vivid Operator
+short_description: Control the Vivid quickread project through a stable script surface.
+default_prompt: Run Vivid quickread on a video source and return the generated artifacts.

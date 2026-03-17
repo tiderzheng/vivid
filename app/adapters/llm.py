@@ -1,0 +1,148 @@
+from __future__ import annotations
+
+import requests
+
+from ..exceptions import VividError
+from ..models.summary import SummaryResult
+from ..utils.json_utils import extract_json_block
+from ..utils.logging_utils import log_event, log_exception
+from ..utils.text import sentence_split, trim_for_llm
+
+
+class LlmAdapter:
+    def __init__(
+        self,
+        *,
+        siliconflow_api_key: str | None,
+        dashscope_api_key: str | None,
+        siliconflow_base_url: str,
+        dashscope_base_url: str,
+        siliconflow_model: str,
+        dashscope_model: str,
+        llm_max_chars: int,
+    ) -> None:
+        self.siliconflow_api_key = siliconflow_api_key
+        self.dashscope_api_key = dashscope_api_key
+        self.siliconflow_base_url = siliconflow_base_url
+        self.dashscope_base_url = dashscope_base_url
+        self.siliconflow_model = siliconflow_model
+        self.dashscope_model = dashscope_model
+        self.llm_max_chars = llm_max_chars
+
+    def summarize(self, transcript: str) -> SummaryResult:
+        clipped = trim_for_llm(transcript, self.llm_max_chars)
+        failures: list[str] = []
+        if self.siliconflow_api_key:
+            try:
+                return self._request_summary(
+                    api_key=self.siliconflow_api_key,
+                    base_url=self.siliconflow_base_url,
+                    model=self.siliconflow_model,
+                    transcript=clipped,
+                    provider_label=f"SiliconFlow {self.siliconflow_model}",
+                )
+            except Exception as exc:
+                failures.append(f"SiliconFlow {self.siliconflow_model}: {exc}")
+                log_exception(
+                    "summary_provider_failed",
+                    exc,
+                    provider="siliconflow",
+                    model=self.siliconflow_model,
+                    base_url=self.siliconflow_base_url,
+                )
+        if self.dashscope_api_key:
+            try:
+                return self._request_summary(
+                    api_key=self.dashscope_api_key,
+                    base_url=self.dashscope_base_url,
+                    model=self.dashscope_model,
+                    transcript=clipped,
+                    provider_label=f"DashScope {self.dashscope_model}",
+                )
+            except Exception as exc:
+                failures.append(f"DashScope {self.dashscope_model}: {exc}")
+                log_exception(
+                    "summary_provider_failed",
+                    exc,
+                    provider="dashscope",
+                    model=self.dashscope_model,
+                    base_url=self.dashscope_base_url,
+                )
+        if failures:
+            log_event("summary_fallback_used", failures=failures, fallback="rule_based")
+        return fallback_summary(transcript)
+
+    def _request_summary(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        model: str,
+        transcript: str,
+        provider_label: str,
+    ) -> SummaryResult:
+        system_prompt = (
+            "You summarize video transcripts. Return valid JSON only with keys "
+            '"one_line", "detailed_summary", and "key_points". '
+            "key_points must be an array of 3 to 5 concise strings."
+        )
+        user_prompt = (
+            "Summarize the transcript below in Chinese.\n"
+            "Requirements:\n"
+            "1. one_line: one sentence.\n"
+            "2. detailed_summary: one compact paragraph.\n"
+            "3. key_points: 3-5 bullets.\n"
+            "4. Do not include markdown fences.\n\n"
+            f"Transcript:\n{transcript}"
+        )
+        response = requests.post(
+            base_url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                "temperature": 0.2,
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        parsed = extract_json_block(content)
+        key_points = [str(item).strip() for item in parsed.get("key_points", []) if str(item).strip()]
+        if not key_points:
+            raise VividError(f"{provider_label} returned no key points.")
+        log_event("summary_provider_succeeded", provider=provider_label, key_points=len(key_points))
+        return SummaryResult(
+            one_line=str(parsed.get("one_line", "")).strip(),
+            detailed=str(parsed.get("detailed_summary", "")).strip(),
+            key_points=key_points[:5],
+            provider=provider_label,
+        )
+
+
+def fallback_summary(transcript: str) -> SummaryResult:
+    sentences = sentence_split(transcript)
+    paragraphs = [part.strip() for part in transcript.split("\n\n") if part.strip()]
+    one_line = sentences[0] if sentences else (transcript[:80].strip() or "未能生成一句话总结。")
+    detailed = " ".join(sentences[:4]).strip() if sentences else (paragraphs[0] if paragraphs else transcript[:300].strip())
+    key_points: list[str] = []
+    for item in sentences[:8]:
+        candidate = item.lstrip("- ").strip()
+        if candidate and candidate not in key_points:
+            key_points.append(candidate)
+        if len(key_points) >= 5:
+            break
+    if not key_points:
+        key_points = [one_line]
+    return SummaryResult(
+        one_line=one_line,
+        detailed=detailed,
+        key_points=key_points[:5],
+        provider="rule-based fallback",
+    )

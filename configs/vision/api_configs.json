@@ -1,0 +1,31 @@
+{
+  "items": [
+    {
+      "id": "local-qwen-vl",
+      "name": "Local Qwen VL",
+      "api_base": "http://localhost:1234",
+      "api_path": "/v1/chat/completions",
+      "model": "qwen/qwen3-vl-8b",
+      "timeout": 30,
+      "group": "local",
+      "note": "Default local OpenAI-compatible OCR config",
+      "prompt": "只返回图片中的可读字幕文本",
+      "system_prompt": "",
+      "api_key_env": "OCR_API_KEY"
+    },
+    {
+      "id": "siliconflow-paddleocr-vl",
+      "name": "SiliconFlow PaddleOCR-VL",
+      "api_base": "https://api.siliconflow.cn",
+      "api_path": "/v1/chat/completions",
+      "model": "PaddlePaddle/PaddleOCR-VL-1.5",
+      "timeout": 60,
+      "group": "cloud",
+      "note": "Cloud OCR fallback via SiliconFlow",
+      "prompt": "只返回画面中的可读字幕文本。若没有字幕，返回空字符串。不要解释，不要描述画面。",
+      "system_prompt": "",
+      "api_key_env": "SILICONFLOW_API_KEY"
+    }
+  ],
+  "selected_id": "siliconflow-paddleocr-vl"
+}

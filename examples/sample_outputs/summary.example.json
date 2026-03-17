@@ -1,0 +1,11 @@
+{
+  "one_line": "这是一个示例摘要。",
+  "detailed": "这里展示 Vivid 输出的 summary.json 基本结构，方便调用方提前对接。",
+  "key_points": [
+    "支持结构化摘要输出",
+    "支持关键要点数组",
+    "支持 provider 标识"
+  ],
+  "provider": "rule-based fallback",
+  "output_format": "both"
+}

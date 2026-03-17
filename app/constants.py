@@ -1,0 +1,9 @@
+DEFAULT_FORMAT = "both"
+DEFAULT_MODEL = "base"
+DEFAULT_EARS4_API = "http://127.0.0.1:7860"
+DEFAULT_EYES_API = "http://127.0.0.1:9531"
+DEFAULT_SILICONFLOW_BASE = "https://api.siliconflow.cn/v1/chat/completions"
+DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+SUPPORTED_PLATFORMS = ("bilibili", "douyin", "youtube", "generic", "local")
+VIDEO_EXTS = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".flv", ".m4v"}
+MEDIA_EXTS = VIDEO_EXTS | {".mp3", ".wav", ".m4a", ".flac", ".aac", ".ogg"}

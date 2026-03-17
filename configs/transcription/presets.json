@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "id": "default",
+      "name": "默认转录",
+      "model": "base",
+      "device": "auto",
+      "language": "zh",
+      "task": "transcribe",
+      "extract_audio": true,
+      "note": "Default Vivid transcription preset"
+    },
+    {
+      "id": "fast-zh",
+      "name": "快速中文",
+      "model": "small",
+      "device": "auto",
+      "language": "zh",
+      "task": "transcribe",
+      "extract_audio": true,
+      "note": "Faster Chinese transcription preset"
+    }
+  ],
+  "selected_id": "default"
+}
