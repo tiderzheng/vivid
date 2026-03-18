@@ -6,6 +6,7 @@ REPO_ROOT="${1:-$(cd -- "${SCRIPT_DIR}/.." && pwd)}"
 VENV_PATH="${REPO_ROOT}/.venv"
 LOCK_FILE="${VENV_PATH}/.creating_lock"
 REQUIREMENTS_PATH="${REPO_ROOT}/requirements.txt"
+TORCH_MODE="$(printf '%s' "${VIVID_TORCH_MODE:-}" | tr '[:upper:]' '[:lower:]')"
 
 RED='\033[0;31m'
 YELLOW='\033[1;33m'
@@ -31,6 +32,31 @@ native_path() {
     else
         printf '%s\n' "$1"
     fi
+}
+
+has_nvidia_gpu() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return 1
+    fi
+    nvidia-smi >/dev/null 2>&1
+}
+
+show_torch_install_choice_and_exit() {
+    local python_path="$1"
+    local requirements_path="$2"
+    echo "" >&2
+    echo -e "${YELLOW}Detected an NVIDIA GPU.${NC}" >&2
+    echo -e "${YELLOW}The default 'pip install -r requirements.txt' path often installs CPU-only torch,${NC}" >&2
+    echo -e "${YELLOW}which makes Whisper run on CPU instead of CUDA.${NC}" >&2
+    echo "" >&2
+    echo -e "Choose one path and rerun:" >&2
+    echo -e "  CPU path  : export VIVID_TORCH_MODE=cpu" >&2
+    echo -e "  CUDA path :" >&2
+    echo -e "    1. \"${python_path}\" -m pip install torch --index-url https://download.pytorch.org/whl/cu128" >&2
+    echo -e "    2. \"${python_path}\" -m pip install -r \"${requirements_path}\"" >&2
+    echo "" >&2
+    echo -e "${RED}Stopped before installing dependencies so you can choose CPU or CUDA torch intentionally.${NC}" >&2
+    exit 1
 }
 
 if VENV_PYTHON="$(detect_venv_python)"; then
@@ -90,6 +116,11 @@ echo -e "${YELLOW}Installing runtime dependencies...${NC}" >&2
 if ! "${VENV_PYTHON}" -m pip install --upgrade pip; then
     echo -e "${RED}Failed to upgrade pip in the virtual environment.${NC}" >&2
     exit 1
+fi
+
+# Stop here on NVIDIA systems unless the user explicitly accepts CPU torch.
+if [[ "${TORCH_MODE}" != "cpu" ]] && has_nvidia_gpu; then
+    show_torch_install_choice_and_exit "${VENV_PYTHON}" "$(native_path "${REQUIREMENTS_PATH}")"
 fi
 
 if ! "${VENV_PYTHON}" -m pip install -r "$(native_path "${REQUIREMENTS_PATH}")"; then

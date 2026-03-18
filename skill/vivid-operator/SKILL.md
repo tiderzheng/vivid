@@ -160,6 +160,41 @@ export VIVID_REPO_ROOT="/用户提供的/路径"
 2. 安装所有Python依赖
 3. 使用虚拟环境的Python运行
 
+如果脚本检测到 **NVIDIA GPU**，会先在 `torch` 安装前停止，避免把 `Whisper` 静默装成 CPU 版。
+
+这时需要二选一：
+
+- CPU 路径：显式设置 `VIVID_TORCH_MODE=cpu` 后重跑
+- CUDA 路径：先手动安装 CUDA 版 `torch`，再安装 `requirements.txt`
+
+Windows 示例：
+
+```powershell
+# CPU
+$env:VIVID_TORCH_MODE = "cpu"
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "视频链接"
+
+# CUDA
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Linux/macOS 示例：
+
+```bash
+# CPU
+export VIVID_TORCH_MODE=cpu
+./skill/vivid-operator/scripts/vivid_operator.sh -Action quickread -Source "视频链接"
+
+# CUDA
+python3 -m venv .venv
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+./.venv/bin/python -m pip install -r requirements.txt
+```
+
 **直接使用**：
 ```bash
 ./skill/vivid-operator/scripts/vivid_operator.sh -Action quickread -Source "视频链接"
@@ -323,6 +358,7 @@ pip install openai-whisper
 
 - CPU 环境：直接执行 `pip install -r requirements.txt`
 - GPU / CUDA 环境：先按官方 PyTorch 说明安装 `torch`，再执行 `pip install -r requirements.txt`
+- 如果脚本检测到 `NVIDIA GPU`，又没有显式设置 `VIVID_TORCH_MODE=cpu`，它会主动停止并提示你做选择
 
 **注意**：Bilibili 和 Douyin 下载器已内嵌到 `tools/` 目录，开箱即用。
 

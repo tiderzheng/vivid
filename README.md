@@ -187,6 +187,11 @@
 2. 安装所有Python依赖
 3. 使用虚拟环境的Python运行
 
+如果脚本检测到 **NVIDIA GPU**，会先停止在 `torch` 安装前，让你明确选择：
+
+- CPU 路径：设置 `VIVID_TORCH_MODE=cpu` 后重跑
+- CUDA 路径：先手动安装 CUDA 版 `torch`，再安装 `requirements.txt`
+
 **Windows:**
 
 ```powershell
@@ -224,6 +229,21 @@ pip install -r requirements.txt
 - `opencv` 缺失时，**瞬知** 会在进入 OCR 路径时自动尝试安装
 - `openai-whisper` 会间接拉起 `torch` 依赖；如果改用外部转录 API，可以不依赖本地 `torch`
 - 首次使用某个Whisper模型时，会自动下载模型文件
+
+如果你是 **NVIDIA GPU / CUDA** 环境，建议安装顺序改成：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+如果你明确只想跑 CPU，可以先设置：
+
+```powershell
+$env:VIVID_TORCH_MODE = "cpu"
+```
 
 ### 2. 检查环境
 

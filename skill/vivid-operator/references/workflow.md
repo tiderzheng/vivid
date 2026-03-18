@@ -23,6 +23,12 @@
 ./skill/vivid-operator/scripts/vivid_operator.sh -Action doctor
 ```
 
+如果自动建环境步骤检测到 **NVIDIA GPU** 并中止：
+
+- 先确认用户是想走 CPU 还是 CUDA
+- CPU：设置 `VIVID_TORCH_MODE=cpu` 后重试
+- CUDA：先手动安装 CUDA 版 `torch`，再继续 `doctor` / `quickread`
+
 重点看：
 
 - `python`

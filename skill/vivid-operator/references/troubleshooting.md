@@ -26,6 +26,31 @@
 - GPU / CUDA 环境建议先按官方 `PyTorch` 说明安装匹配版本的 `torch`
 - 然后再重新执行 `doctor`
 
+如果脚本检测到 **NVIDIA GPU** 并直接停止，不是报错逻辑坏了，而是在防止你把 `torch` 静默装成 CPU 版。
+
+这时二选一：
+
+1. 明确接受 CPU
+
+```powershell
+$env:VIVID_TORCH_MODE = "cpu"
+```
+
+```bash
+export VIVID_TORCH_MODE=cpu
+```
+
+2. 明确安装 CUDA 版 `torch`
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+装完后再执行 `doctor`，确认 `torch` 可用且 `torch.cuda.is_available()` 为真。
+
 ## `opencv` 缺失 / `doctor` 显示 `opencv: false`
 
 **这是正常的！** `opencv` **仅在 OCR 路径时需要**，音频转录（默认路径）**完全不需要**。

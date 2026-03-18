@@ -4,6 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 VENV_PYTHON="$("${SCRIPT_DIR}/ensure_venv.sh" "${REPO_ROOT}")"
+TORCH_MODE="$(printf '%s' "${VIVID_TORCH_MODE:-}" | tr '[:upper:]' '[:lower:]')"
 
 if [[ -z "${VENV_PYTHON}" ]]; then
     echo "Could not resolve the virtual environment Python executable." >&2
@@ -27,10 +28,28 @@ run_doctor_json() {
     "${VENV_PYTHON}" -m app.control_cli doctor
 }
 
+has_nvidia_gpu() {
+    if ! command -v nvidia-smi >/dev/null 2>&1; then
+        return 1
+    fi
+    nvidia-smi >/dev/null 2>&1
+}
+
+torch_cuda_available() {
+    "${VENV_PYTHON}" -c "import torch; print('1' if torch.cuda.is_available() else '0')" 2>/dev/null | grep -q '^1$'
+}
+
 DOCTOR_JSON="$(run_doctor_json)"
 
 if [[ "${FIX_MODE}" == "true" ]]; then
     if ! printf '%s' "${DOCTOR_JSON}" | "${VENV_PYTHON}" -c "import json, sys; raise SystemExit(0 if json.load(sys.stdin)['ok'] else 1)"; then
+        if [[ "${TORCH_MODE}" != "cpu" ]] && has_nvidia_gpu && ! torch_cuda_available; then
+            echo "Detected an NVIDIA GPU." >&2
+            echo "doctor --fix would reinstall 'requirements.txt' and may pull CPU-only torch." >&2
+            echo "If you want CPU intentionally, run: export VIVID_TORCH_MODE=cpu" >&2
+            echo "If you want CUDA, install CUDA torch first, then rerun doctor." >&2
+            exit 1
+        fi
         "${VENV_PYTHON}" -m pip install -r "${REPO_ROOT}/requirements.txt"
         DOCTOR_JSON="$(run_doctor_json)"
     fi

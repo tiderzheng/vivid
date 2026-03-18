@@ -31,6 +31,41 @@
 Python 依赖通常不需要手动安装。
 脚本会自动创建 `.venv/` 并安装 `requirements.txt`。
 
+如果检测到 **NVIDIA GPU**，脚本会先停止在 `torch` 安装前，避免把 `Whisper` 静默装成 CPU 版。
+
+这时需要二选一：
+
+- CPU 路径：先设置 `VIVID_TORCH_MODE=cpu`，再重跑
+- CUDA 路径：先手动安装 CUDA 版 `torch`，再安装 `requirements.txt`
+
+Windows:
+
+```powershell
+$env:VIVID_TORCH_MODE = "cpu"
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "视频链接"
+```
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Linux/macOS:
+
+```bash
+export VIVID_TORCH_MODE=cpu
+./skill/vivid-operator/scripts/vivid_operator.sh -Action quickread -Source "视频链接"
+```
+
+```bash
+python3 -m venv .venv
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+./.venv/bin/python -m pip install -r requirements.txt
+```
+
 ## 基本用法
 
 先确认路径：
