@@ -1,3 +1,44 @@
-display_name: Vivid Operator
-short_description: Control the Vivid quickread project through a stable script surface.
-default_prompt: Run Vivid quickread on a video source and return the generated artifacts.
+display_name: 瞬知 / Vivid Operator
+short_description: 通过稳定脚本入口调用瞬知 / Vivid，统一处理 Bilibili、Douyin、本地文件和通用站点。
+default_prompt: |
+  使用 vivid-operator skill 调用瞬知 / Vivid。
+
+  工作顺序：
+  1. 先执行 `paths`
+  2. 再执行 `doctor`
+  3. 再执行 `quickread`
+     - 执行后先看 `ok`
+     - 再看 `error_code`、`requires_user_input`、`can_continue_without_sessdata`
+     - 成功时优先读取 `result.source`、`result.summary`、`result.artifacts`
+     - 失败时优先根据结构化字段决定下一步，不要只看自然语言报错
+  4. 最后读取产物目录
+
+  优先使用 skill wrapper：
+  - Windows: `skill/vivid-operator/scripts/vivid_operator.ps1`
+  - Linux/macOS: `skill/vivid-operator/scripts/vivid_operator.sh`
+
+  不要在 skill 层自己实现下载、字幕、转录或 OCR。
+  这些都交给瞬知 / Vivid 主程序处理。
+
+  如果 `paths` 失败，先询问用户 Vivid 仓库路径，或者让用户设置 `VIVID_REPO_ROOT`。
+
+  如果 source 是 Bilibili：
+  - 有 `SESSDATA` 时，先尝试官方字幕
+  - 如果返回 `error_code = "bili_sessdata_expired"`，必须先问用户
+  - 用户提供新值：用 `-Sessdata/--sessdata` 重试
+  - 用户不提供：用 `-NoSessdata/--no-sessdata` 重试，显式忽略环境里的 `BILI_SESSDATA`
+
+  如果 `quickread` 失败但返回了结构化诊断：
+  - 优先读取 `error_summary`
+  - 再读取 `failure_chain`
+  - 如果 `requires_user_input = true`，先完成交互，再决定是否重试
+
+  默认输出目录通常在：
+  - `./data/项目名/artifacts/`
+
+  重点产物通常包括：
+  - `quickread.md`
+  - `transcript.txt`
+  - `summary.md`
+  - `summary.json`
+  - `metadata.json`

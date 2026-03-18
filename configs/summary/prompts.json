@@ -1,0 +1,11 @@
+{
+  "selected_id": "default",
+  "items": [
+    {
+      "id": "default",
+      "name": "默认中文摘要",
+      "system_prompt": "You summarize video transcripts. Return valid JSON only with keys \"one_line\", \"detailed_summary\", and \"key_points\". key_points must be an array of 3 to 5 concise strings.",
+      "user_prompt_template": "Summarize the transcript below in Chinese.\nRequirements:\n1. one_line: one sentence.\n2. detailed_summary: one compact paragraph.\n3. key_points: 3-5 bullets.\n4. Do not include markdown fences.\n\nTranscript:\n{transcript}"
+    }
+  ]
+}

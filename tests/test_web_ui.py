@@ -6,6 +6,7 @@ from zipfile import ZipFile
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.exceptions import BilibiliSessdataExpiredError
 from app.pipeline.orchestrator import OrchestratorResult
 from app.models.artifact import ArtifactBundle
 from app.models.source import SourceInfo
@@ -118,6 +119,7 @@ def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
     assert payload["dependencies"]["opencv"]["package"] == "opencv-python"
     assert payload["stats"]["queued"] == 0
     assert payload["defaults"]["data_dir"] == str(settings.data_dir)
+    assert payload["defaults"]["no_sessdata"] is False
 
 
 def test_web_default_output_dir_can_be_saved(tmp_path, monkeypatch):
@@ -241,6 +243,141 @@ def test_web_quickread_upload_works(tmp_path, monkeypatch):
     assert payload["ok"] is True
     assert payload["transcript"]["acquisition_method"] == "Internal Whisper base"
     assert "quickread_markdown" in payload["files"]
+
+
+def test_web_quickread_passes_sessdata_controls(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr("app.web.build_runtime_options", fake_build_runtime_options)
+    monkeypatch.setattr(
+        "app.web.run_quickread",
+        lambda _options: OrchestratorResult(
+            source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Bilibili subtitle"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=ArtifactBundle(
+                workdir=settings.data_dir / "demo",
+                artifacts_dir=settings.data_dir / "demo" / "artifacts",
+                quickread_markdown=settings.data_dir / "demo" / "artifacts" / "quickread.md",
+                transcript_text=settings.data_dir / "demo" / "artifacts" / "transcript.txt",
+                summary_markdown=settings.data_dir / "demo" / "artifacts" / "summary.md",
+                summary_json=settings.data_dir / "demo" / "artifacts" / "summary.json",
+                metadata_json=settings.data_dir / "demo" / "artifacts" / "metadata.json",
+            ),
+            rendered="rendered",
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/quickread",
+        data={
+            "source_url": "https://www.bilibili.com/video/BV1xx",
+            "sessdata": "fresh-cookie",
+            "no_sessdata": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["values"]["sessdata"] == "fresh-cookie"
+    assert captured["values"]["no_sessdata"] is True
+
+
+def test_web_quickread_returns_structured_sessdata_refresh_payload(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    def fake_run(_options, pause_on_bili_sessdata_expired=False):
+        assert pause_on_bili_sessdata_expired is True
+        raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
+
+    monkeypatch.setattr("app.web.run_quickread", fake_run)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/quickread",
+        data={"source_url": "https://www.bilibili.com/video/BV1xx", "sessdata": "expired"},
+    )
+
+    assert response.status_code == 409
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["error_code"] == "bili_sessdata_expired"
+    assert payload["requires_user_input"] is True
+    assert payload["can_continue_without_sessdata"] is True
+
+
+def test_web_jobs_request_keeps_no_sessdata_but_not_secret(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    monkeypatch.setattr("app.web.build_runtime_options", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.web._invoke_run_quickread",
+        lambda *_args, **_kwargs: OrchestratorResult(
+            source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Bilibili subtitle"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=ArtifactBundle(
+                workdir=settings.data_dir / "demo",
+                artifacts_dir=settings.data_dir / "demo" / "artifacts",
+                quickread_markdown=settings.data_dir / "demo" / "artifacts" / "quickread.md",
+                transcript_text=settings.data_dir / "demo" / "artifacts" / "transcript.txt",
+                summary_markdown=settings.data_dir / "demo" / "artifacts" / "summary.md",
+                summary_json=settings.data_dir / "demo" / "artifacts" / "summary.json",
+                metadata_json=settings.data_dir / "demo" / "artifacts" / "metadata.json",
+            ),
+            rendered="rendered",
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/jobs",
+        data={
+            "source_url": "https://www.bilibili.com/video/BV1xx",
+            "sessdata": "fresh-cookie",
+            "no_sessdata": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    job = response.json()["job"]
+    assert job["request"]["no_sessdata"] is True
+    assert "sessdata" not in job["request"]
+
+
+def test_web_retry_job_accepts_sessdata_overrides(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured = {}
+
+    class FakeManager:
+        def retry(self, _settings, job_id, overrides=None):
+            captured["job_id"] = job_id
+            captured["overrides"] = overrides
+            return {"job_id": "new-job"}
+
+    monkeypatch.setattr("app.web.get_job_manager", lambda _settings: FakeManager())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/jobs/job-1/retry",
+        data={"sessdata": "fresh-cookie", "no_sessdata": "false"},
+    )
+
+    assert response.status_code == 200
+    assert captured["job_id"] == "job-1"
+    assert captured["overrides"] == {"sessdata": "fresh-cookie", "no_sessdata": False}
 
 
 def test_web_quickread_requires_source(tmp_path, monkeypatch):
@@ -952,3 +1089,47 @@ def test_web_job_exposes_failure_chain(tmp_path, monkeypatch):
     assert job["failure_chain"][0]["error"] == "subtitle broken"
     assert job["error_summary"]["has_issues"] is True
     assert job["error_summary"]["items"]
+
+
+def test_web_job_exposes_bili_sessdata_refresh_state(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    def fake_run(_options, event_callback=None):
+        if event_callback:
+            event_callback(
+                "sessdata_refresh_required",
+                "Bilibili SESSDATA 已失效，请先更新；若不更新，可清空后继续后续流程",
+                {
+                    "error": "api error -101: 账号未登录",
+                    "error_code": "bili_sessdata_expired",
+                    "can_continue_without_sessdata": True,
+                },
+            )
+        raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
+
+    monkeypatch.setattr("app.web.run_quickread", fake_run)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/api/jobs",
+        data={"source_url": "https://www.bilibili.com/video/BV1xx", "platform": "bilibili", "sessdata": "expired"},
+    )
+    assert create_response.status_code == 200
+    job_id = create_response.json()["job"]["job_id"]
+
+    job = None
+    for _ in range(40):
+        detail = client.get(f"/api/jobs/{job_id}")
+        job = detail.json()["job"]
+        if job["status"] == "failed":
+            break
+        time.sleep(0.05)
+
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["error_code"] == "bili_sessdata_expired"
+    assert job["requires_user_input"] is True
+    assert job["can_continue_without_sessdata"] is True
+    assert job["user_prompt"]

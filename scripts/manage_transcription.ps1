@@ -15,7 +15,15 @@ param(
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$presets = if ($PresetsFile) { $PresetsFile } elseif ($env:VIVID_TRANSCRIPTION_PRESETS_FILE) { $env:VIVID_TRANSCRIPTION_PRESETS_FILE } else { Join-Path $repoRoot "configs\\transcription\\presets.json" }
+
+# Ensure the runtime virtual environment exists.
+$venvPython = & "$PSScriptRoot\ensure_venv.ps1" -RepoRoot $repoRoot
+if (-not $venvPython) {
+    Write-Error "Could not resolve the virtual environment Python executable."
+    exit 1
+}
+
+$presets = if ($PresetsFile) { $PresetsFile } elseif ($env:VIVID_TRANSCRIPTION_PRESETS_FILE) { $env:VIVID_TRANSCRIPTION_PRESETS_FILE } else { Join-Path $repoRoot "configs\transcription\presets.json" }
 
 $args = @(
     "-m", "app.tools.transcription_admin",
@@ -37,7 +45,7 @@ switch ($Command) {
 
 Push-Location $repoRoot
 try {
-    python @args
+    & $venvPython @args
 } finally {
     Pop-Location
 }

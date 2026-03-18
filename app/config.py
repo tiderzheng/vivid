@@ -61,6 +61,10 @@ class Settings:
     vision_api_configs_path: Path
     vision_prompts_path: Path
     transcription_presets_path: Path
+    summary_prompt_id: str | None = None
+    summary_system_prompt: str | None = None
+    summary_user_prompt: str | None = None
+    summary_prompts_path: Path | None = None
 
 
 def load_settings() -> Settings:
@@ -151,6 +155,15 @@ def load_settings() -> Settings:
             os.environ.get(
                 "VIVID_TRANSCRIPTION_PRESETS_FILE",
                 str(repo_root / "configs" / "transcription" / "presets.json"),
+            )
+        ),
+        summary_prompt_id=os.environ.get("VIVID_SUMMARY_PROMPT_ID") or None,
+        summary_system_prompt=os.environ.get("VIVID_SUMMARY_SYSTEM_PROMPT") or None,
+        summary_user_prompt=os.environ.get("VIVID_SUMMARY_USER_PROMPT") or None,
+        summary_prompts_path=Path(
+            os.environ.get(
+                "VIVID_SUMMARY_PROMPTS_FILE",
+                str(repo_root / "configs" / "summary" / "prompts.json"),
             )
         ),
     )

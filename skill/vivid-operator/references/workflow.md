@@ -1,53 +1,82 @@
-# Workflow
+# Workflow（瞬知 / Vivid）
 
-这是 `vivid-operator` 的推荐调用顺序。
+这是 `vivid-operator` 的推荐执行顺序。
 
-## 1. 看路径
+## 0. 定位仓库
 
-先执行：
+优先执行：
 
-`paths`
+```bash
+./skill/vivid-operator/scripts/vivid_operator.sh -Action paths
+```
 
-目的：
+如果自动检测失败：
 
-- 确认项目根目录
-- 确认默认输出目录
-- 确认 `Bilibili` / `Douyin` helper 路径
+- 让用户提供 Vivid 仓库路径
+- 或让用户设置 `VIVID_REPO_ROOT`
 
-## 2. 做环境检查
+## 1. 环境检查
 
-再执行：
+执行：
 
-`doctor`
+```bash
+./skill/vivid-operator/scripts/vivid_operator.sh -Action doctor
+```
 
-重点确认：
+重点看：
 
 - `python`
-- `node`
 - `ffmpeg`
-- `opencv`
-- `bili_helper`
-- `douyin_helper`
+- `bilibili helper`
+- `douyin helper`
+- 可选：`node`
 
-## 3. 跑 quickread
+`opencv: false` 不一定是问题。
+默认音频转录路径不依赖 `opencv`。
 
-再执行：
+## 2. 执行 quickread
 
-`quickread`
+执行：
 
-如果用户给的是：
+```bash
+./skill/vivid-operator/scripts/vivid_operator.sh -Action quickread -Source "视频链接"
+```
 
-- 视频链接
-- 本地视频
-- 本地音频
+`quickread` 内部会处理：
 
-都应该优先走这个动作。
+1. 平台识别
+2. 标题获取
+3. 字幕 / 媒体获取
+4. 转录或 OCR
+5. 摘要生成
+6. 产物写入
+
+执行 `quickread` 后，skill 应优先检查：
+
+1. `ok`
+2. `error_code`
+3. `requires_user_input`
+4. `error_summary`
+5. `failure_chain`
+
+## 3. Bilibili `SESSDATA` 规则
+
+如果是 Bilibili：
+
+1. 有 `SESSDATA` 时，先尝试官方字幕
+2. 如果返回 `error_code = "bili_sessdata_expired"`：
+   - 先问用户是否提供新的 `SESSDATA`
+   - 提供了：用 `-Sessdata/--sessdata` 重试
+   - 不提供：用 `-NoSessdata/--no-sessdata` 重试
+
+不要再写成“清空环境变量后继续”这种模糊动作。
+对 skill 来说，正确动作是显式重试并传参。
 
 ## 4. 读取产物
 
-成功后去读：
+成功后读取：
 
-`data\项目名\artifacts\`
+- `./data/项目名/artifacts/`
 
 重点文件：
 
@@ -55,4 +84,3 @@
 - `transcript.txt`
 - `summary.md`
 - `metadata.json`
-

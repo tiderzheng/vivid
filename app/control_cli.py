@@ -4,10 +4,12 @@ import argparse
 import importlib.util
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings
+from .exceptions import BilibiliSessdataExpiredError
 from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
 from .services.dependency_bootstrap import ensure_opencv_dependency
@@ -36,6 +38,8 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-DataDir", "--data-dir")
     quickread.add_argument("-Platform", "--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
     quickread.add_argument("-Model", "--model", choices=["tiny", "base", "small", "medium", "large"])
+    quickread.add_argument("-Sessdata", "--sessdata")
+    quickread.add_argument("-NoSessdata", "--no-sessdata", action="store_true")
     quickread.add_argument("-FfmpegBin", "--ffmpeg-bin")
     quickread.add_argument("-WhisperRoot", "--whisper-root")
     quickread.add_argument("-AcquisitionMode", "--acquisition-mode", choices=["auto", "smart", "prefer_ocr", "force_ocr"])
@@ -45,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-VisionBackend", "--vision-backend", choices=["auto", "internal", "eyes_api"])
     quickread.add_argument("-TranscribeTimeout", "--transcribe-timeout", type=int)
     quickread.add_argument("-OcrTimeout", "--ocr-timeout", type=int)
+    quickread.add_argument("-SummaryPromptId", "--summary-prompt-id")
+    quickread.add_argument("-SummarySystemPrompt", "--summary-system-prompt")
+    quickread.add_argument("-SummaryUserPrompt", "--summary-user-prompt")
+    quickread.add_argument("-SummaryPromptsFile", "--summary-prompts-file")
     quickread.add_argument("-VisionApiConfigId", "--vision-api-config-id")
     quickread.add_argument("-VisionTimeout", "--vision-timeout", type=int)
     quickread.add_argument("-VisionSampleMs", "--vision-sample-ms", type=int)
@@ -161,6 +169,10 @@ def build_paths_payload(settings: Settings) -> dict[str, Any]:
                 "api_configs": str(settings.vision_api_configs_path),
                 "prompts": str(settings.vision_prompts_path),
             },
+            "summary": {
+                "root": str(settings.repo_root / "configs" / "summary"),
+                "prompts": str(settings.summary_prompts_path) if settings.summary_prompts_path else None,
+            },
             "transcription": {
                 "root": str(settings.repo_root / "configs" / "transcription"),
                 "presets": str(settings.transcription_presets_path),
@@ -189,24 +201,62 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
     ffmpeg_info = inspect_ffmpeg(preferred=None, repo_root=settings.repo_root, tools_root=settings.tools_root)
     opencv_info = ensure_opencv_dependency(raise_on_failure=False)
     checks = {
-        "python": {"available": shutil.which("python") is not None, "path": shutil.which("python")},
-        "node": {"available": shutil.which("node") is not None, "path": shutil.which("node")},
+        "python": {
+            "available": True,
+            "path": sys.executable,
+            "name": "python",
+            "required": True,
+            "install_hint": "Install Python 3.10+",
+        },
+        "node": {
+            "available": shutil.which("node") is not None,
+            "path": shutil.which("node"),
+            "name": "node",
+            "required": False,
+            "install_hint": "Install Node.js only if you need Douyin downloads",
+        },
         "ffmpeg": {
             "available": bool(ffmpeg_info.get("available")),
             "path": ffmpeg_info.get("resolved"),
             "source": ffmpeg_info.get("source"),
             "candidates": ffmpeg_info.get("candidates"),
+            "name": "ffmpeg",
+            "required": True,
+            "install_hint": "Install ffmpeg and add it to PATH or set VIVID_FFMPEG_BIN",
         },
-        "requests": {"available": _module_available("requests")},
-        "yt_dlp_python": {"available": _module_available("yt_dlp")},
-        "whisper": {"available": _module_available("whisper")},
-        "torch": {"available": _module_available("torch")},
+        "requests": {
+            "available": _module_available("requests"),
+            "name": "requests",
+            "required": True,
+            "install_hint": "Run pip install -r requirements.txt",
+        },
+        "yt_dlp_python": {
+            "available": _module_available("yt_dlp"),
+            "name": "yt-dlp",
+            "required": False,
+            "install_hint": "Run pip install yt-dlp if you need generic site downloads",
+        },
+        "whisper": {
+            "available": _module_available("whisper"),
+            "name": "openai-whisper",
+            "required": True,
+            "install_hint": "Run pip install -r requirements.txt",
+        },
+        "torch": {
+            "available": _module_available("torch"),
+            "name": "torch",
+            "required": False,
+            "install_hint": "Only required for internal Whisper transcription; external API transcription can run without it",
+        },
         "opencv": {
             "available": bool(opencv_info.get("ok")),
             "package": opencv_info.get("package"),
             "installed": opencv_info.get("installed"),
             "already_available": opencv_info.get("already_available"),
             "index_url": opencv_info.get("index_url"),
+            "name": opencv_info.get("package") or "opencv-python",
+            "required": False,
+            "install_hint": "Only required for OCR paths; the app can install it on demand",
         },
         "vivid_data_dir": {"path": str(settings.data_dir)},
         "ffmpeg_bin": {"value": settings.ffmpeg_bin},
@@ -222,10 +272,16 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
         "bili_helper": {
             "exists": bool(settings.bili_script and settings.bili_script.exists()),
             "path": str(settings.bili_script) if settings.bili_script else None,
+            "name": "bilibili helper",
+            "required": True,
+            "install_hint": "Ensure tools/bilibili/bili23_agent_cli.py exists or set VIVID_BILI_SCRIPT",
         },
         "douyin_helper": {
             "exists": bool(settings.douyin_script and settings.douyin_script.exists()),
             "path": str(settings.douyin_script) if settings.douyin_script else None,
+            "name": "douyin helper",
+            "required": True,
+            "install_hint": "Ensure tools/douyin/douyin.js exists or set VIVID_DOUYIN_SCRIPT",
         },
         "vision_configs": {
             "api_configs": {
@@ -243,16 +299,19 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
                 "path": str(settings.transcription_presets_path),
             }
         },
+        "summary_configs": {
+            "prompts": {
+                "exists": bool(settings.summary_prompts_path and settings.summary_prompts_path.exists()),
+                "path": str(settings.summary_prompts_path) if settings.summary_prompts_path else None,
+            },
+        },
     }
     ok = all(
         [
             checks["python"]["available"],
-            checks["node"]["available"],
             checks["ffmpeg"]["available"],
             checks["requests"]["available"],
             checks["whisper"]["available"],
-            checks["torch"]["available"],
-            checks["opencv"]["available"],
             checks["bili_helper"]["exists"],
             checks["douyin_helper"]["exists"],
         ]
@@ -278,6 +337,8 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
                 "output_format": args.format,
                 "whisper_model": args.model,
                 "forced_platform": args.platform,
+                "sessdata": args.sessdata,
+                "no_sessdata": args.no_sessdata,
                 "ffmpeg_bin": args.ffmpeg_bin,
                 "whisper_root": args.whisper_root,
                 "acquisition_mode": args.acquisition_mode,
@@ -287,6 +348,10 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
                 "vision_backend": args.vision_backend,
                 "transcribe_timeout": args.transcribe_timeout,
                 "ocr_timeout": args.ocr_timeout,
+                "summary_prompt_id": args.summary_prompt_id,
+                "summary_system_prompt": args.summary_system_prompt,
+                "summary_user_prompt": args.summary_user_prompt,
+                "summary_prompts_path": args.summary_prompts_file,
                 "vision_api_config_id": args.vision_api_config_id,
                 "vision_timeout": args.vision_timeout,
                 "vision_sample_ms": args.vision_sample_ms,
@@ -294,17 +359,42 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
                 "no_keep_files": args.no_keep_files,
             },
         )
-        result = run_quickread(options)
+        result = run_quickread(options, pause_on_bili_sessdata_expired=True)
         payload = _quickread_payload(args, result.to_dict(), None, True)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
+    except BilibiliSessdataExpiredError as exc:
+        payload = _quickread_payload(
+            args,
+            None,
+            str(exc),
+            False,
+            error_code="bili_sessdata_expired",
+            requires_user_input=True,
+            user_prompt="当前 Bilibili SESSDATA 可能已过期。请提供新的 SESSDATA；如果不提供，可清空后继续后续媒体、转录和 OCR 流程。",
+            can_continue_without_sessdata=True,
+            next_action_hint="重试 quickread 时传入 -Sessdata/--sessdata 新值；若用户不提供，则改用 -NoSessdata/--no-sessdata 显式忽略环境中的 BILI_SESSDATA。",
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1
     except Exception as exc:  # noqa: BLE001
         payload = _quickread_payload(args, None, str(exc), False)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
 
 
-def _quickread_payload(args: argparse.Namespace, result: dict[str, Any] | None, error: str | None, ok: bool) -> dict[str, Any]:
+def _quickread_payload(
+    args: argparse.Namespace,
+    result: dict[str, Any] | None,
+    error: str | None,
+    ok: bool,
+    *,
+    error_code: str | None = None,
+    requires_user_input: bool = False,
+    user_prompt: str | None = None,
+    can_continue_without_sessdata: bool = False,
+    next_action_hint: str | None = None,
+) -> dict[str, Any]:
     return {
         "action": "quickread",
         "ok": ok,
@@ -314,11 +404,14 @@ def _quickread_payload(args: argparse.Namespace, result: dict[str, Any] | None, 
         "data_dir": args.data_dir,
         "platform": args.platform,
         "model": args.model,
+        "sessdata_supplied": bool(getattr(args, "sessdata", None)),
+        "no_sessdata": bool(getattr(args, "no_sessdata", False)),
         "no_keep_files": bool(args.no_keep_files),
         "exit_code": 0 if ok else 1,
         "result": result,
         "raw_output": None,
         "error": error,
+        "error_code": error_code,
         "ffmpeg_bin": args.ffmpeg_bin,
         "whisper_root": args.whisper_root,
         "acquisition_mode": args.acquisition_mode,
@@ -333,6 +426,10 @@ def _quickread_payload(args: argparse.Namespace, result: dict[str, Any] | None, 
         "vision_sample_ms": args.vision_sample_ms or 0,
         "vision_min_duration_ms": args.vision_min_duration_ms or 0,
         "error_summary": (result or {}).get("error_summary") if result else None,
+        "requires_user_input": requires_user_input,
+        "user_prompt": user_prompt,
+        "can_continue_without_sessdata": can_continue_without_sessdata,
+        "next_action_hint": next_action_hint,
     }
 
 

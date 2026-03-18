@@ -1,7 +1,9 @@
+import json
 from pathlib import Path
 
 from app.config import Settings
-from app.control_cli import build_doctor_payload, build_paths_payload
+from app.control_cli import _run_quickread, build_doctor_payload, build_parser, build_paths_payload
+from app.exceptions import BilibiliSessdataExpiredError
 
 
 def _build_settings(tmp_path: Path) -> Settings:
@@ -69,6 +71,7 @@ def test_build_paths_payload_includes_shell_scripts(tmp_path):
     assert payload["scripts"]["vivid_tool_sh"].endswith("vivid_tool.sh")
     assert payload["skill"]["wrapper_sh"].endswith("vivid_operator.sh")
     assert payload["tools"]["helper_paths"]["bili"].endswith("bili.py")
+    assert payload["tools"]["helper_paths"]["douyin"].endswith("douyin.js")
 
 
 def test_build_doctor_payload_reports_torch_and_helpers(tmp_path, monkeypatch):
@@ -97,5 +100,129 @@ def test_build_doctor_payload_reports_torch_and_helpers(tmp_path, monkeypatch):
     payload = build_doctor_payload(settings)
     assert payload["ok"] is True
     assert payload["checks"]["torch"]["available"] is True
+    assert payload["checks"]["torch"]["required"] is False
     assert payload["checks"]["bili_helper"]["exists"] is True
     assert payload["checks"]["douyin_helper"]["exists"] is True
+
+
+def test_build_doctor_payload_treats_node_and_opencv_as_optional(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    monkeypatch.setattr(
+        "app.control_cli.inspect_ffmpeg",
+        lambda preferred, repo_root, tools_root: {
+            "available": True,
+            "resolved": "ffmpeg",
+            "source": "path",
+            "candidates": ["ffmpeg"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.control_cli.ensure_opencv_dependency",
+        lambda raise_on_failure=False: {
+            "ok": False,
+            "package": "opencv-python",
+            "installed": False,
+            "already_available": False,
+            "index_url": "https://mirrors.aliyun.com/pypi/simple/",
+        },
+    )
+
+    def fake_which(name: str) -> str | None:
+        if name == "node":
+            return None
+        return name
+
+    monkeypatch.setattr("app.control_cli.shutil.which", fake_which)
+    monkeypatch.setattr("app.control_cli._module_available", lambda name: True)
+    payload = build_doctor_payload(settings)
+    assert payload["ok"] is True
+    assert payload["checks"]["node"]["required"] is False
+    assert payload["checks"]["opencv"]["required"] is False
+
+
+def test_build_doctor_payload_treats_torch_as_optional(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    monkeypatch.setattr(
+        "app.control_cli.inspect_ffmpeg",
+        lambda preferred, repo_root, tools_root: {
+            "available": True,
+            "resolved": "ffmpeg",
+            "source": "path",
+            "candidates": ["ffmpeg"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.control_cli.ensure_opencv_dependency",
+        lambda raise_on_failure=False: {
+            "ok": True,
+            "package": "opencv-python",
+            "installed": True,
+            "already_available": True,
+            "index_url": "https://mirrors.aliyun.com/pypi/simple/",
+        },
+    )
+
+    def fake_module_available(name: str) -> bool:
+        return name != "torch"
+
+    monkeypatch.setattr("app.control_cli.shutil.which", lambda name: name)
+    monkeypatch.setattr("app.control_cli._module_available", fake_module_available)
+    payload = build_doctor_payload(settings)
+
+    assert payload["ok"] is True
+    assert payload["checks"]["torch"]["available"] is False
+    assert payload["checks"]["torch"]["required"] is False
+
+
+def test_run_quickread_returns_structured_sessdata_refresh_payload(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://www.bilibili.com/video/BV1xx",
+            "--sessdata",
+            "expired",
+        ]
+    )
+
+    monkeypatch.setattr("app.control_cli.build_runtime_options", lambda *_args, **_kwargs: object())
+
+    def fake_run_quickread(options, pause_on_bili_sessdata_expired=False):
+        assert pause_on_bili_sessdata_expired is True
+        raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
+
+    monkeypatch.setattr("app.control_cli.run_quickread", fake_run_quickread)
+
+    exit_code = _run_quickread(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["error_code"] == "bili_sessdata_expired"
+    assert payload["requires_user_input"] is True
+    assert payload["can_continue_without_sessdata"] is True
+    assert payload["sessdata_supplied"] is True
+
+
+def test_run_quickread_payload_includes_no_sessdata_flag(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://www.bilibili.com/video/BV1xx",
+            "--no-sessdata",
+        ]
+    )
+
+    monkeypatch.setattr("app.control_cli.build_runtime_options", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "app.control_cli.run_quickread",
+        lambda *args, **kwargs: type("Result", (), {"to_dict": lambda self: {"error_summary": None}})(),
+    )
+
+    exit_code = _run_quickread(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["no_sessdata"] is True

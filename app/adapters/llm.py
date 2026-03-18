@@ -20,6 +20,8 @@ class LlmAdapter:
         siliconflow_model: str,
         dashscope_model: str,
         llm_max_chars: int,
+        summary_system_prompt: str,
+        summary_user_prompt: str,
     ) -> None:
         self.siliconflow_api_key = siliconflow_api_key
         self.dashscope_api_key = dashscope_api_key
@@ -28,6 +30,8 @@ class LlmAdapter:
         self.siliconflow_model = siliconflow_model
         self.dashscope_model = dashscope_model
         self.llm_max_chars = llm_max_chars
+        self.summary_system_prompt = summary_system_prompt
+        self.summary_user_prompt = summary_user_prompt
 
     def summarize(self, transcript: str) -> SummaryResult:
         clipped = trim_for_llm(transcript, self.llm_max_chars)
@@ -81,20 +85,8 @@ class LlmAdapter:
         transcript: str,
         provider_label: str,
     ) -> SummaryResult:
-        system_prompt = (
-            "You summarize video transcripts. Return valid JSON only with keys "
-            '"one_line", "detailed_summary", and "key_points". '
-            "key_points must be an array of 3 to 5 concise strings."
-        )
-        user_prompt = (
-            "Summarize the transcript below in Chinese.\n"
-            "Requirements:\n"
-            "1. one_line: one sentence.\n"
-            "2. detailed_summary: one compact paragraph.\n"
-            "3. key_points: 3-5 bullets.\n"
-            "4. Do not include markdown fences.\n\n"
-            f"Transcript:\n{transcript}"
-        )
+        system_prompt = self.summary_system_prompt
+        user_prompt = self._render_summary_user_prompt(transcript)
         response = requests.post(
             base_url,
             headers={
@@ -124,6 +116,12 @@ class LlmAdapter:
             key_points=key_points[:5],
             provider=provider_label,
         )
+
+    def _render_summary_user_prompt(self, transcript: str) -> str:
+        template = self.summary_user_prompt.strip()
+        if "{transcript}" in template:
+            return template.replace("{transcript}", transcript)
+        return f"{template}\n\nTranscript:\n{transcript}"
 
 
 def fallback_summary(transcript: str) -> SummaryResult:

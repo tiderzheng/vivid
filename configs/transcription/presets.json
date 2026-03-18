@@ -3,7 +3,7 @@
     {
       "id": "default",
       "name": "默认转录",
-      "model": "base",
+      "model": "large",
       "device": "auto",
       "language": "zh",
       "task": "transcribe",

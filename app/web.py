@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import Settings, load_settings
+from .exceptions import BilibiliSessdataExpiredError
 from .pipeline.orchestrator import OrchestratorResult, run_quickread
 from .runtime_factory import build_runtime_options
 from .services.dependency_bootstrap import ensure_opencv_dependency
@@ -34,6 +35,13 @@ from .subsystems.transcription.store import load_transcription_store
 from .subsystems.vision.store import load_vision_store
 
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
+WHISPER_MODEL_INFO = {
+    "tiny": {"size": "~39 MB", "speed": "最快", "accuracy": "较低", "best_for": "快速测试"},
+    "base": {"size": "~74 MB", "speed": "快", "accuracy": "一般", "best_for": "日常使用"},
+    "small": {"size": "~244 MB", "speed": "中等", "accuracy": "较好", "best_for": "平衡选择"},
+    "medium": {"size": "~769 MB", "speed": "较慢", "accuracy": "好", "best_for": "高质量需求"},
+    "large": {"size": "~1.5 GB", "speed": "最慢", "accuracy": "最好", "best_for": "专业场景"},
+}
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 
 app = FastAPI(title="Vivid Web UI")
@@ -72,6 +80,10 @@ class WebJobRecord:
         suggested_resume_stage: str | None = None,
         failure_chain: list[dict[str, Any]] | None = None,
         error_summary: dict[str, Any] | None = None,
+        error_code: str | None = None,
+        requires_user_input: bool = False,
+        user_prompt: str | None = None,
+        can_continue_without_sessdata: bool = False,
     ) -> dict[str, Any]:
         payload = asdict(self)
         payload["queue_position"] = queue_position
@@ -82,6 +94,10 @@ class WebJobRecord:
         payload["suggested_resume_stage"] = suggested_resume_stage
         payload["failure_chain"] = failure_chain or []
         payload["error_summary"] = error_summary or {"has_issues": False, "headline": "", "items": []}
+        payload["error_code"] = error_code
+        payload["requires_user_input"] = requires_user_input
+        payload["user_prompt"] = user_prompt
+        payload["can_continue_without_sessdata"] = can_continue_without_sessdata
         return payload
 
 
@@ -148,7 +164,12 @@ class WebJobManager:
     def submit_many(self, settings: Settings, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [self.submit(settings, dict(values)) for values in payloads]
 
-    def retry(self, settings: Settings, job_id: str) -> dict[str, Any]:
+    def retry(
+        self,
+        settings: Settings,
+        job_id: str,
+        overrides: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         with self.lock:
             record = self.records.get(job_id)
             if record is None:
@@ -156,6 +177,8 @@ class WebJobManager:
             if record.status not in TERMINAL_JOB_STATUSES:
                 raise RuntimeError("job is not in terminal state")
             values = dict(record.request)
+        if overrides:
+            values.update(overrides)
         source = _text_or_none(values.get("source"))
         if not source:
             raise ValueError("job source is missing")
@@ -319,6 +342,8 @@ class WebJobManager:
         queue_position = self._queue_position_locked(record.job_id)
         workdir = self._resolve_record_workdir(record)
         resume_details = self._resume_details(record, workdir)
+        error_code = _extract_job_error_code(record.events, record.error)
+        requires_user_input = error_code == "bili_sessdata_expired"
         return record.to_dict(
             queue_position=queue_position,
             can_cancel=record.status == "queued",
@@ -328,6 +353,14 @@ class WebJobManager:
             suggested_resume_stage=resume_details["suggested_resume_stage"],
             failure_chain=extract_failure_chain(record.events),
             error_summary=build_error_summary(record.events),
+            error_code=error_code,
+            requires_user_input=requires_user_input,
+            user_prompt=(
+                "当前 Bilibili SESSDATA 可能已过期。可在顶部表单填写新的 SESSDATA 后重试，或者忽略它继续后续流程。"
+                if requires_user_input
+                else None
+            ),
+            can_continue_without_sessdata=requires_user_input,
         )
 
     def _resolve_record_workdir(self, record: WebJobRecord) -> str | None:
@@ -501,14 +534,16 @@ async def stream_job_events(job_id: str) -> StreamingResponse:
 
 
 @app.post("/api/jobs/{job_id}/retry")
-async def retry_job(job_id: str) -> dict[str, Any]:
+async def retry_job(job_id: str, request: Request) -> dict[str, Any]:
     settings = load_settings()
     manager = get_job_manager(settings)
     try:
-        job = manager.retry(settings, job_id)
+        job = manager.retry(settings, job_id, overrides=await _collect_retry_overrides(request))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
     except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -602,11 +637,27 @@ async def quickread(request: Request) -> JSONResponse:
     temp_upload_path = _text_or_none(values.get("_temp_upload_path"))
     try:
         options = build_runtime_options(settings, values)
-        result = run_quickread(options)
+        parameters = inspect.signature(run_quickread).parameters
+        if "pause_on_bili_sessdata_expired" in parameters:
+            result = run_quickread(options, pause_on_bili_sessdata_expired=True)
+        else:
+            result = run_quickread(options)
         payload = {"ok": True, **_serialize_result(result)}
         return JSONResponse(payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except BilibiliSessdataExpiredError as exc:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": str(exc),
+                "error_code": "bili_sessdata_expired",
+                "requires_user_input": True,
+                "user_prompt": "当前 Bilibili SESSDATA 可能已过期。请填写新的 SESSDATA；如果不提供，可选择忽略后继续后续媒体、转录和 OCR 流程。",
+                "can_continue_without_sessdata": True,
+            },
+            status_code=409,
+        )
     except Exception as exc:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=500)
     finally:
@@ -715,6 +766,8 @@ def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any
         "output_format": _clean_form_value(form.get("output_format")),
         "whisper_model": _clean_form_value(form.get("whisper_model")),
         "forced_platform": _clean_form_value(form.get("platform")),
+        "sessdata": _clean_form_value(form.get("sessdata")),
+        "no_sessdata": _bool_value(form.get("no_sessdata")),
         "language": _clean_form_value(form.get("language")),
         "transcription_preset_id": _clean_form_value(form.get("transcription_preset_id")),
         "acquisition_mode": _clean_form_value(form.get("acquisition_mode")),
@@ -738,6 +791,23 @@ def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any
         "no_keep_files": _checkbox_to_no_keep_files(form),
     }
     return values
+
+
+async def _collect_retry_overrides(request: Request) -> dict[str, Any]:
+    content_type = request.headers.get("content-type", "")
+    payload: Any
+    if "application/json" in content_type:
+        payload = await request.json()
+    else:
+        payload = await request.form()
+    if not isinstance(payload, dict) and not hasattr(payload, "get"):
+        return {}
+    overrides: dict[str, Any] = {}
+    if "sessdata" in payload:
+        overrides["sessdata"] = _clean_form_value(payload.get("sessdata"))
+    if "no_sessdata" in payload:
+        overrides["no_sessdata"] = _bool_value(payload.get("no_sessdata"))
+    return overrides
 
 
 def _collect_sources_from_form(form: Any) -> list[str]:
@@ -807,6 +877,8 @@ def _settings_defaults(
         "vision_system_prompt": preferred_vision_openai.get("vision_system_prompt") or (selected_config.system_prompt if selected_config else settings.vision_system_prompt),
         "vision_sample_ms": settings.vision_sample_ms,
         "vision_min_duration_ms": settings.vision_min_duration_ms,
+        "sessdata": "",
+        "no_sessdata": False,
         "keep_files": True,
     }
 
@@ -816,6 +888,7 @@ def _options_payload(settings: Settings) -> dict[str, Any]:
     transcription_store = load_transcription_store(settings.transcription_presets_path)
     return {
         "whisper_models": WHISPER_MODELS,
+        "whisper_model_info": WHISPER_MODEL_INFO,
         "platforms": ["", "local", "douyin", "bilibili", "youtube", "generic"],
         "output_formats": ["transcript", "summary", "both"],
         "acquisition_modes": ["auto", "smart", "prefer_ocr", "force_ocr"],
@@ -865,6 +938,7 @@ def _public_request(values: dict[str, Any]) -> dict[str, Any]:
         "vision_timeout",
         "vision_sample_ms",
         "vision_min_duration_ms",
+        "no_sessdata",
         "prefer_ocr",
         "force_ocr",
         "no_keep_files",
@@ -955,9 +1029,21 @@ def _render_index() -> str:
           <label>平台<select name="platform"></select></label>
         </div>
         <div class="grid2">
+          <label>Bilibili SESSDATA
+            <input name="sessdata" type="password" placeholder="可选，仅本次提交使用" autocomplete="off" />
+          </label>
+          <label>会话策略
+            <select name="no_sessdata">
+              <option value="false">允许使用环境变量</option>
+              <option value="true">忽略环境变量</option>
+            </select>
+          </label>
+        </div>
+        <div class="grid2">
           <label>Whisper 模型<select name="whisper_model"></select></label>
           <label>输出格式<select name="output_format"></select></label>
         </div>
+        <div id="whisper-model-info" class="hint" style="margin-top: -10px; margin-bottom: 10px; color: #666;"></div>
         <div class="grid2">
           <label>采集策略<select name="acquisition_mode"></select></label>
           <label>转录预设<select name="transcription_preset_id"></select></label>
@@ -1082,6 +1168,28 @@ def _render_index() -> str:
       state.jobs = payload.jobs || [];
       pruneSelectedJobs();
       renderHistory(state.jobs);
+      
+      // 初始化Whisper模型信息展示
+      setupWhisperModelInfo(payload.options.whisper_model_info);
+    }
+    
+    function setupWhisperModelInfo(modelInfo) {
+      const select = document.querySelector('[name="whisper_model"]');
+      const infoDiv = document.getElementById('whisper-model-info');
+      
+      function updateInfo() {
+        const model = select.value;
+        const info = modelInfo[model];
+        if (info) {
+          infoDiv.innerHTML = `
+            <strong>${model}</strong> 模型: ${info.size} | ${info.speed} | 准确度: ${info.accuracy} | 适用: ${info.best_for}
+            <br><span style="color: #2196F3;">💡 首次使用会自动下载模型文件，请确保网络畅通</span>
+          `;
+        }
+      }
+      
+      select.addEventListener('change', updateInfo);
+      updateInfo(); // 初始显示
     }
 
     function fillSelect(name, items) {
@@ -1298,6 +1406,14 @@ def _render_index() -> str:
           </div>
         `);
       }
+      if (job.error_code === "bili_sessdata_expired") {
+        lines.push(`<h3>Bilibili SESSDATA</h3>`);
+        lines.push(`<div class="pre">${escapeHtml(job.user_prompt || "当前 Bilibili SESSDATA 可能已过期。")}</div>`);
+        lines.push(`<div class="links">
+          <a href="#" onclick="retryJobWithFormSessdata('${escapeAttr(job.job_id)}'); return false;">用表单里的 SESSDATA 重试</a>
+          ${job.can_continue_without_sessdata ? `<a href="#" onclick="retryJobWithoutSessdata('${escapeAttr(job.job_id)}'); return false;">忽略 SESSDATA 继续</a>` : ""}
+        </div>`);
+      }
       if (job.error_summary && job.error_summary.has_issues) {
         lines.push(`<h3>错误摘要</h3>`);
         lines.push(`<div class="pre">${escapeHtml([job.error_summary.headline, ...(job.error_summary.items || []).map((item) => `- ${item}`)].join("\\n"))}</div>`);
@@ -1357,6 +1473,7 @@ def _render_index() -> str:
       const data = {};
       for (const element of form.elements) {
         if (!element.name || element.type === "file") continue;
+        if (element.name === "sessdata") continue;
         data[element.name] = element.value;
       }
       localStorage.setItem(storageKey, JSON.stringify(data));
@@ -1368,6 +1485,7 @@ def _render_index() -> str:
       try {
         const data = JSON.parse(text);
         for (const [key, value] of Object.entries(data)) {
+          if (key === "sessdata") continue;
           const field = document.querySelector(`[name="${key}"]`);
           if (field && value !== null && value !== undefined && value !== "") {
             field.value = value;
@@ -1382,8 +1500,15 @@ def _render_index() -> str:
       node.style.color = isError ? "#ef4444" : "#94a3b8";
     }
 
-    async function retryJob(jobId) {
-      const response = await fetch(`/api/jobs/${jobId}/retry`, { method: "POST" });
+    async function retryJob(jobId, overrides = null) {
+      const formData = new FormData();
+      if (overrides) {
+        for (const [key, value] of Object.entries(overrides)) {
+          if (value === undefined || value === null) continue;
+          formData.set(key, String(value));
+        }
+      }
+      const response = await fetch(`/api/jobs/${jobId}/retry`, { method: "POST", body: formData });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         setFormMessage(payload.detail || payload.error || "重试失败", true);
@@ -1392,6 +1517,20 @@ def _render_index() -> str:
       state.activeJobId = payload.job.job_id;
       setFormMessage(`已重新提交：${payload.job.job_id}`);
       await loadJob(payload.job.job_id, true);
+    }
+
+    async function retryJobWithFormSessdata(jobId) {
+      const field = document.querySelector('[name="sessdata"]');
+      const sessdata = String(field ? field.value || "" : "").trim();
+      if (!sessdata) {
+        setFormMessage("先在顶部表单填写新的 SESSDATA。", true);
+        return;
+      }
+      await retryJob(jobId, { sessdata, no_sessdata: "false" });
+    }
+
+    async function retryJobWithoutSessdata(jobId) {
+      await retryJob(jobId, { no_sessdata: "true" });
     }
 
     async function cancelJob(jobId) {
@@ -1688,6 +1827,29 @@ def _clean_form_value(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _extract_job_error_code(events: list[dict[str, Any]] | None, error: str | None) -> str | None:
+    for event in reversed(events or []):
+        data = event.get("data") if isinstance(event.get("data"), dict) else None
+        code = _text_or_none((data or {}).get("error_code"))
+        if code:
+            return code
+    if _looks_like_bili_sessdata_expired(error):
+        return "bili_sessdata_expired"
+    return None
+
+
+def _looks_like_bili_sessdata_expired(message: str | None) -> bool:
+    if not message:
+        return False
+    text = str(message).strip().lower()
+    return "sessdata" in text and (
+        "expired" in text
+        or "-101" in text
+        or "未登录" in message
+        or "过期" in message
+    )
 
 
 def _text_or_none(value: Any) -> str | None:

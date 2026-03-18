@@ -20,6 +20,18 @@
 - **瞬知 / Vivid** = 真正执行全流程的程序
 - `vivid-operator` = 调用 **瞬知** 的统一 skill
 
+### 入口边界
+
+这两层入口面向的对象不同：
+
+- 仓库级 `README` 和 `docs/` 默认面向普通用户或开发者，因此主入口写成 `scripts/vivid_tool.ps1` / `scripts/vivid_tool.sh`
+- `skill/vivid-operator/` 下的文档默认面向 AI agent，因此主入口写成 `skill/vivid-operator/scripts/vivid_operator.ps1` / `skill/vivid-operator/scripts/vivid_operator.sh`
+
+两者不是两套不同实现：
+
+- `vivid_operator.*` 是 skill wrapper，负责定位仓库并转发参数
+- `vivid_tool.*` 是仓库内的主控制脚本
+
 ## 这个项目能做什么
 
 - 处理 `Bilibili` 视频链接
@@ -59,6 +71,9 @@
   - 直接使用本地视频 / 音频
 - **Bilibili**
   - 优先尝试直接提取字幕
+  - `SESSDATA` 来源优先级是：`--sessdata` > `--no-sessdata` > `BILI_SESSDATA`
+  - 如果配置了 `SESSDATA`，会先用它尝试获取官方字幕
+  - 如果控制面返回 `error_code = "bili_sessdata_expired"`，应先更新 `SESSDATA`；如果用户不提供，再用 `--no-sessdata` 显式忽略旧会话后继续媒体流程
   - 如果拿不到字幕，再下载媒体
   - 使用内嵌的下载器（位于 `tools/bilibili/`）
 - **Douyin**
@@ -103,6 +118,16 @@
 2. `DashScope`
 3. 规则摘要兜底
 
+摘要提示词现在也支持配置化：
+
+- 默认文件：`configs/summary/prompts.json`
+- 默认模板占位符：`{transcript}`
+- 可用环境变量：
+  - `VIVID_SUMMARY_PROMPT_ID`
+  - `VIVID_SUMMARY_SYSTEM_PROMPT`
+  - `VIVID_SUMMARY_USER_PROMPT`
+  - `VIVID_SUMMARY_PROMPTS_FILE`
+
 ### 5. 产物输出
 
 每次运行都会落盘一套标准产物：
@@ -139,45 +164,66 @@
 
 ## 快速开始
 
-### 1. 安装依赖
+### 1. 系统依赖
 
-Windows:
+**必需**：
+- Python 3.10+
+- ffmpeg
 
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-```
-
-Linux/macOS:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-还需要准备：
-
-- `ffmpeg`
-- `Node.js`（仅Douyin下载需要）
+**可选**：
+- Node.js（仅下载抖音视频时需要）
 
 **注意**：Bilibili和Douyin下载器已内嵌到 `tools/` 目录，无需额外安装。
 
-内部 `Whisper` 转录还会用到：
+### 2. 开始使用（自动虚拟环境）
 
-- `torch`
+**瞬知 / Vivid** 现在支持**自动虚拟环境管理**！
 
-说明：
+如果你是直接在仓库里使用本项目，优先用这里的 `scripts/vivid_tool.*`。
+如果你是在 skill / agent 场景里调用，请改看 `skill/vivid-operator/` 下的 wrapper 文档。
 
-- `opencv` 缺失时，**瞬知** 会自动尝试安装：
-  - `pip install opencv-python -i https://mirrors.aliyun.com/pypi/simple/`
-- 默认镜像可通过 `VIVID_PIP_INDEX_URL` 覆盖
-- `openai-whisper` 会间接拉起 `torch` 依赖，但 `torch` 的正确安装方式通常取决于你的 CPU / CUDA / 平台
-- 因此项目没有在 `requirements.txt` 里强行固定 `torch` 版本，避免把错误的 wheel 强加给用户
-- 如果你只是本地 CPU 跑通，通常直接执行 `pip install -r requirements.txt` 即可
-- 如果你需要指定 GPU / CUDA 版本，建议先按官方 `PyTorch` 安装说明装好对应版本的 `torch`，再安装 `openai-whisper` 和其它依赖
-- 简单说：`torch` 是内部 `Whisper` 的系统级前置依赖，`doctor` 也会检查它是否可用
+首次运行时，脚本会自动：
+1. 创建虚拟环境（`.venv/`）
+2. 安装所有Python依赖
+3. 使用虚拟环境的Python运行
+
+**Windows:**
+
+```powershell
+# 直接运行，自动创建虚拟环境并安装依赖
+.\scripts\vivid_tool.ps1 -Action quickread -Source "https://www.bilibili.com/video/BVxxxx"
+```
+
+**Linux/macOS:**
+
+```bash
+# 直接运行，自动创建虚拟环境并安装依赖
+./scripts/vivid_tool.sh -Action quickread -Source "https://www.bilibili.com/video/BVxxxx"
+```
+
+### 3. 手动安装（可选）
+
+如果你想手动控制虚拟环境：
+
+```bash
+# 创建虚拟环境
+python -m venv .venv
+
+# 激活虚拟环境（Windows）
+.venv\Scripts\Activate.ps1
+
+# 激活虚拟环境（Linux/macOS）
+source .venv/bin/activate
+
+# 安装依赖
+pip install -r requirements.txt
+```
+
+### 依赖说明
+
+- `opencv` 缺失时，**瞬知** 会在进入 OCR 路径时自动尝试安装
+- `openai-whisper` 会间接拉起 `torch` 依赖；如果改用外部转录 API，可以不依赖本地 `torch`
+- 首次使用某个Whisper模型时，会自动下载模型文件
 
 ### 2. 检查环境
 
@@ -201,8 +247,8 @@ Linux/macOS:
 - `node`（Douyin下载需要）
 - `ffmpeg`
 - `whisper`（openai-whisper包）
-- `torch`
-- `opencv`（会自动安装）
+- `torch`（仅内部 Whisper 转录需要）
+- `opencv`（仅 OCR 路径需要，会自动安装）
 - 内嵌下载器（`tools/bilibili/`、`tools/douyin/`）
 - 内部配置文件
 
@@ -270,12 +316,15 @@ Web UI 支持：
 - 选择 `Whisper` 模型
 - 设置采集策略，支持 `smart` 智能推荐
 - 设置转录后端 / OCR 后端
+- 填写 Bilibili `SESSDATA`，或显式忽略环境中的 `BILI_SESSDATA`
+- 同一次任务里，表单显式填写的 `SESSDATA` 优先于环境变量；如果选择忽略 `SESSDATA`，则会显式跳过环境变量
 - 选择或填写 OCR OpenAI 兼容 API 配置
 - 保存默认 OCR API 配置
 - 查看任务进度、日志、历史任务
 - 在历史任务里批量选择并导出多个任务产物 zip
 - 任务失败后根据 checkpoint 从 `transcription` / `summarize` / `render` / `artifacts` 继续
 - Web 历史详情会展示结构化失败链；成功任务的 `metadata.json` 也会保留回退和失败轨迹
+- 如果 Bilibili `SESSDATA` 过期，任务详情会直接提供“使用表单中的新 `SESSDATA` 重试”和“忽略 `SESSDATA` 继续”两个动作
 - 下载产物
 - 一键打开输出目录
 
@@ -300,6 +349,13 @@ Web UI 支持：
 - `DASHSCOPE_API_KEY`
 - `VIVID_SILICONFLOW_MODEL`
 - `VIVID_DASHSCOPE_MODEL`
+- `VIVID_SUMMARY_PROMPT_ID`
+- `VIVID_SUMMARY_SYSTEM_PROMPT`
+- `VIVID_SUMMARY_USER_PROMPT`
+
+默认摘要模板文件：
+
+- `configs/summary/prompts.json`
 
 ### OCR AI
 
@@ -339,10 +395,10 @@ OCR 默认也由 **瞬知** 自己配置。
 
 - `Bilibili`
   - 内嵌路径：`tools/bilibili/bili23_agent_cli.py`
-  - 原项目：bili-downloader-agent（已内嵌）
+  - 来源项目：`bili-downloader-agent`（已内嵌）
 - `Douyin`
   - 内嵌路径：`tools/douyin/douyin.js`
-  - 原项目：douyin-download（已内嵌）
+  - 来源项目：`douyin-download`（已内嵌）
 - `其他站点`
   - 使用 `yt_dlp`（通过pip安装）
 
@@ -415,6 +471,7 @@ OCR 默认也由 **瞬知** 自己配置。
 因为内部视频 OCR 要先从视频抽帧，`opencv` 就是做这个的。
 
 它不是下载器，不是总结模型，也不是 Whisper。
+如果你只走默认音频转录路径，通常不需要手动关心它。
 
 ### 为什么会出现 `torch`
 
@@ -425,14 +482,16 @@ OCR 默认也由 **瞬知** 自己配置。
 - **瞬知** 内部转录
 
 通常就会用到 `torch`。
+如果你改用外部转录 API，`torch` 就不是主路径必需项。
 
 ### 为什么会出现 `Node.js`
 
 因为 `Douyin` 下载器（`tools/douyin/douyin.js`）是 `Node.js` 脚本。该下载器已内嵌，但你仍需安装Node.js运行时。
 
-### 为什么会出现 `bili-downloader-agent`
+### 为什么还会看到 `bili-downloader-agent`
 
-因为 `Bilibili` 的字幕和媒体获取使用这套工具。该下载器已内嵌到 `tools/bilibili/`，开箱即用。
+因为 `Bilibili` 下载 helper 来源于这套工具。
+当前用户真正接触到的是仓库里的 `tools/bilibili/bili23_agent_cli.py`，不是单独安装一个外部项目。
 
 ### 什么时候会用到 `Eyes` / `Ears4`
 

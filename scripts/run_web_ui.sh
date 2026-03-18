@@ -3,17 +3,6 @@ set -euo pipefail
 
 HOST="127.0.0.1"
 PORT="8765"
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [[ -z "${PYTHON_BIN}" ]]; then
-  if command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="python"
-  elif command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-  else
-    echo "python or python3 is required" >&2
-    exit 127
-  fi
-fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -35,7 +24,13 @@ done
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
+# 确保虚拟环境存在（使用统一的ensure_venv脚本）
+VENV_PYTHON=$("${SCRIPT_DIR}/ensure_venv.sh" "${REPO_ROOT}")
+if [[ -z "${VENV_PYTHON}" ]]; then
+    echo "无法获取虚拟环境Python路径" >&2
+    exit 1
+fi
+
 cd "${REPO_ROOT}"
 export PYTHONUTF8=1
-"${PYTHON_BIN}" -c "from app.services.dependency_bootstrap import ensure_opencv_dependency; ensure_opencv_dependency(raise_on_failure=False)" >/dev/null
-exec "${PYTHON_BIN}" -m uvicorn app.web:app --host "${HOST}" --port "${PORT}"
+exec "${VENV_PYTHON}" -m uvicorn app.web:app --host "${HOST}" --port "${PORT}"

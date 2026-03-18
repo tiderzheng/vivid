@@ -54,3 +54,7 @@ class RuntimeOptions:
     keep_files: bool
     resume_workdir: Path | None = None
     resume_stage: str | None = None
+    summary_prompt_id: str | None = None
+    summary_system_prompt: str | None = None
+    summary_user_prompt: str | None = None
+    summary_prompts_path: Path | None = None

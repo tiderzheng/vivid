@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.exceptions import BilibiliSessdataExpiredError
 from app.adapters.ears4 import Ears4Response
 from app.models.runtime import RuntimeOptions
 from app.pipeline.acquisition import acquire_transcript
@@ -298,6 +299,127 @@ def test_acquire_transcript_reports_subtitle_failure_reason(tmp_path, monkeypatc
     subtitle_failed = [item for item in events if item[0] == "subtitle_failed"]
     assert subtitle_failed
     assert subtitle_failed[0][2]["error"] == "subtitle broken"
+
+
+def test_acquire_transcript_clears_expired_sessdata_and_continues(tmp_path, monkeypatch):
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    media_path = tmp_path / "input.mp4"
+    media_path.write_text("x", encoding="utf-8")
+    options = _build_options(tmp_path, backend="auto", acquisition_mode="auto")
+    options.source = "https://www.bilibili.com/video/BV1xx"
+    options.sessdata = "expired"
+    events = []
+    captured = {}
+
+    monkeypatch.setattr(
+        "app.pipeline.acquisition.BilibiliAdapter.export_subtitles",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            BilibiliSessdataExpiredError("api error -101: 账号未登录")
+        ),
+    )
+
+    def fake_create_media_path(_source, _platform, _workdir, runtime_options, _event_callback=None):
+        captured["sessdata"] = runtime_options.sessdata
+        return media_path
+
+    monkeypatch.setattr("app.pipeline.acquisition.create_media_path", fake_create_media_path)
+    monkeypatch.setattr(
+        "app.pipeline.acquisition.InternalTranscriptionEngine.transcribe",
+        lambda *_args, **_kwargs: InternalTranscriptionResult(
+            transcript="fallback ok",
+            audio_path=None,
+            runtime_device="cpu",
+        ),
+    )
+
+    result = acquire_transcript(
+        options,
+        "bilibili",
+        workdir,
+        event_callback=lambda stage, message, data=None: events.append((stage, message, data)),
+    )
+
+    assert result.text == "fallback ok"
+    assert options.sessdata is None
+    assert captured["sessdata"] is None
+    refresh_events = [item for item in events if item[0] == "sessdata_refresh_required"]
+    assert refresh_events
+    assert refresh_events[0][2]["error_code"] == "bili_sessdata_expired"
+
+
+def test_acquire_transcript_pauses_on_expired_sessdata_when_requested(tmp_path, monkeypatch):
+    workdir = tmp_path / "work"
+    workdir.mkdir(parents=True, exist_ok=True)
+    options = _build_options(tmp_path, backend="auto", acquisition_mode="auto")
+    options.source = "https://www.bilibili.com/video/BV1xx"
+    options.sessdata = "expired"
+    events = []
+
+    monkeypatch.setattr(
+        "app.pipeline.acquisition.BilibiliAdapter.export_subtitles",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            BilibiliSessdataExpiredError("api error -101: 账号未登录")
+        ),
+    )
+    monkeypatch.setattr(
+        "app.pipeline.acquisition.create_media_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should pause before media fallback")),
+    )
+
+    try:
+        acquire_transcript(
+            options,
+            "bilibili",
+            workdir,
+            event_callback=lambda stage, message, data=None: events.append((stage, message, data)),
+            pause_on_bili_sessdata_expired=True,
+        )
+    except BilibiliSessdataExpiredError:
+        pass
+    else:
+        raise AssertionError("pause_on_bili_sessdata_expired should surface the refresh request")
+
+    refresh_events = [item for item in events if item[0] == "sessdata_refresh_required"]
+    assert refresh_events
+    assert options.sessdata == "expired"
+
+
+def test_acquire_transcript_retries_media_without_expired_sessdata(tmp_path, monkeypatch):
+    media_path = tmp_path / "input.mp4"
+    media_path.write_text("x", encoding="utf-8")
+    workdir = tmp_path / "work"
+    options = _build_options(tmp_path, backend="auto", acquisition_mode="prefer_ocr")
+    options.source = "https://www.bilibili.com/video/BV1xx"
+    options.sessdata = "expired"
+    events = []
+    attempts = {"count": 0, "sessdata": []}
+
+    def fake_create_media_path(_source, _platform, _workdir, runtime_options, _event_callback=None):
+        attempts["count"] += 1
+        attempts["sessdata"].append(runtime_options.sessdata)
+        if attempts["count"] == 1:
+            raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
+        return media_path
+
+    monkeypatch.setattr("app.pipeline.acquisition.create_media_path", fake_create_media_path)
+    monkeypatch.setattr(
+        "app.pipeline.acquisition.InternalVisionEngine.extract_text",
+        lambda *_args, **_kwargs: type("Result", (), {"transcript": "ocr ok"})(),
+    )
+
+    result = acquire_transcript(
+        options,
+        "bilibili",
+        workdir,
+        event_callback=lambda stage, message, data=None: events.append((stage, message, data)),
+    )
+
+    assert result.text == "ocr ok"
+    assert attempts["sessdata"] == ["expired", None]
+    assert options.sessdata is None
+    retry_events = [item for item in events if item[0] == "download_retry"]
+    assert retry_events
 
 
 def test_acquire_transcript_reports_ocr_failure_reason_before_fallback(tmp_path, monkeypatch):

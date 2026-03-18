@@ -6,6 +6,7 @@ import inspect
 from pathlib import Path
 from typing import Any, Callable
 
+from ..exceptions import BilibiliSessdataExpiredError
 from ..models.artifact import ArtifactBundle
 from ..models.runtime import RuntimeOptions
 from ..models.source import SourceInfo
@@ -78,6 +79,8 @@ class OrchestratorResult:
 def run_quickread(
     options: RuntimeOptions,
     event_callback: QuickreadEventCallback | None = None,
+    *,
+    pause_on_bili_sessdata_expired: bool = False,
 ) -> OrchestratorResult:
     diagnostics: list[dict[str, Any]] = []
     recording_callback = _build_recording_callback(event_callback, diagnostics)
@@ -105,6 +108,45 @@ def run_quickread(
         platform = resume_state.get("platform") or detect_platform(options.source, options.forced_platform)
         update_run_state(workdir, platform=platform, last_completed_stage="detect_platform", workdir=str(workdir))
         _emit_event(recording_callback, "detect_platform", "识别平台完成", {"platform": platform})
+        
+        # 尝试获取视频标题（用于更好的项目命名）
+        fetched_title: str | None = None
+        saved_title = str(resume_state.get("title")).strip() if resume_state.get("title") else None
+        if not options.project_name and not saved_title:
+            try:
+                if platform == "bilibili":
+                    from ..adapters.bilibili import BilibiliAdapter
+                    adapter = BilibiliAdapter(options.bili_script)
+                    fetched_title = adapter.get_video_title(options.source, options.sessdata)
+                elif platform == "douyin":
+                    from ..adapters.douyin import DouyinAdapter
+                    adapter = DouyinAdapter(options.douyin_script)
+                    fetched_title = adapter.get_video_title(options.source)
+                
+                if fetched_title:
+                    _emit_event(recording_callback, "title_fetch", "获取视频标题", {"title": fetched_title})
+            except BilibiliSessdataExpiredError as exc:
+                _emit_event(
+                    recording_callback,
+                    "sessdata_refresh_required",
+                    "Bilibili SESSDATA 已失效，请先更新；若不更新，可清空后继续后续流程",
+                    {
+                        "error": str(exc),
+                        "error_code": "bili_sessdata_expired",
+                        "can_continue_without_sessdata": True,
+                    },
+                )
+                if pause_on_bili_sessdata_expired:
+                    raise
+                options.sessdata = None
+            except Exception as exc:
+                _emit_event(
+                    recording_callback,
+                    "title_fetch_fallback",
+                    "视频标题获取失败，将使用默认命名策略",
+                    {"platform": platform, "error": str(exc)},
+                )
+        
         resume_stage = options.resume_stage
         transcript = _load_resumed_transcript(resume_state, resume_stage)
         if transcript is None:
@@ -115,11 +157,12 @@ def run_quickread(
                     options,
                     platform,
                     workdir,
-                    event_callback=recording_callback,
-                    checkpoint_callback=_build_checkpoint_callback(workdir),
-                    resume_media_path=_resume_media_path(resume_state, resume_stage),
-                ),
-            )
+                event_callback=recording_callback,
+                checkpoint_callback=_build_checkpoint_callback(workdir),
+                resume_media_path=_resume_media_path(resume_state, resume_stage),
+                pause_on_bili_sessdata_expired=pause_on_bili_sessdata_expired,
+            ),
+        )
             update_run_state(
                 workdir,
                 transcript=transcript_to_payload(transcript),
@@ -140,11 +183,16 @@ def run_quickread(
                 "文本获取完成",
                 {"acquisition_method": transcript.acquisition_method},
             )
-        title = resume_state.get("title") or (
-            derive_title(options.source, options.project_name)
-            if options.project_name
-            else infer_video_title(options.source, transcript.media_path, workdir)
-        )
+        # 确定项目标题优先级：1. 用户指定 2. 获取的平台标题 3. 从媒体文件推断 4. 从URL提取
+        title: str
+        if saved_title:
+            title = saved_title
+        elif options.project_name:
+            title = derive_title(options.source, options.project_name)
+        elif fetched_title:
+            title = fetched_title
+        else:
+            title = infer_video_title(options.source, transcript.media_path, workdir)
         _emit_event(recording_callback, "title", "确定项目名称", {"title": title})
         if (not resume_mode) or not resume_state.get("title"):
             final_workdir = move_to_final_workdir(workdir, options.data_dir, title)

@@ -29,6 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
     parser.add_argument("--sessdata", help="Override Bilibili session value")
+    parser.add_argument("--no-sessdata", action="store_true", help="Ignore BILI_SESSDATA and run without any Bilibili session")
     parser.add_argument("--ffmpeg-bin", help="Override ffmpeg executable path")
     parser.add_argument("--whisper-root", help="Override local whisper package root")
     parser.add_argument("--ears4-api", help="Override Ears4 base URL")
@@ -58,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-max-chars", type=int, help="Max transcript chars sent to LLM")
     parser.add_argument("--siliconflow-model", help="Primary summary model")
     parser.add_argument("--dashscope-model", help="Fallback summary model")
+    parser.add_argument("--summary-prompt-id", help="Select summary prompt preset id from Vivid summary configs")
+    parser.add_argument("--summary-system-prompt", help="Override summary system prompt")
+    parser.add_argument("--summary-user-prompt", help="Override summary user prompt template; use {transcript} as placeholder")
+    parser.add_argument("--summary-prompts-file", help="Override Vivid summary prompts file")
     parser.add_argument("--vision-api-config-id", help="Override Eyes-side OCR config id")
     parser.add_argument(
         "--vision-backend",
@@ -111,6 +116,7 @@ def main() -> int:
             "whisper_model": args.model,
             "forced_platform": args.platform,
             "sessdata": args.sessdata,
+            "no_sessdata": args.no_sessdata,
             "ffmpeg_bin": args.ffmpeg_bin,
             "whisper_root": args.whisper_root,
             "ears4_api": args.ears4_api,
@@ -128,6 +134,10 @@ def main() -> int:
             "llm_max_chars": args.llm_max_chars,
             "siliconflow_model": args.siliconflow_model,
             "dashscope_model": args.dashscope_model,
+            "summary_prompt_id": args.summary_prompt_id,
+            "summary_system_prompt": args.summary_system_prompt,
+            "summary_user_prompt": args.summary_user_prompt,
+            "summary_prompts_path": args.summary_prompts_file,
             "vision_api_config_id": args.vision_api_config_id,
             "vision_backend": args.vision_backend,
             "vision_api_base": args.vision_api_base,

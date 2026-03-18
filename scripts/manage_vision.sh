@@ -3,16 +3,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-}"
-if [[ -z "${PYTHON_BIN}" ]]; then
-  if command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="python"
-  elif command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="python3"
-  else
-    echo "python or python3 is required" >&2
-    exit 127
-  fi
+VENV_PYTHON="$("${SCRIPT_DIR}/ensure_venv.sh" "${REPO_ROOT}")"
+if [[ -z "${VENV_PYTHON}" ]]; then
+  echo "Could not resolve the virtual environment Python executable." >&2
+  exit 1
 fi
 
 COMMAND=""
@@ -77,4 +71,4 @@ esac
 
 cd "${REPO_ROOT}"
 export PYTHONUTF8=1
-exec "${PYTHON_BIN}" "${ARGS[@]}"
+exec "${VENV_PYTHON}" "${ARGS[@]}"

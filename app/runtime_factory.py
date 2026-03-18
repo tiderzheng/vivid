@@ -28,7 +28,7 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
         output_format=_text_or_none(values.get("output_format")) or settings.default_format,
         whisper_model=_text_or_none(values.get("whisper_model")) or settings.default_model,
         forced_platform=_text_or_none(values.get("forced_platform")),
-        sessdata=_text_or_none(values.get("sessdata")) or settings.bili_sessdata,
+        sessdata=_resolve_sessdata(settings, values),
         ffmpeg_bin=resolve_ffmpeg_bin(
             _text_or_none(values.get("ffmpeg_bin")) or settings.ffmpeg_bin,
             repo_root=settings.repo_root,
@@ -97,6 +97,16 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
         keep_files=not _bool_value(values.get("no_keep_files")),
         resume_workdir=_coerce_path(values.get("resume_workdir")),
         resume_stage=_text_or_none(values.get("resume_stage")),
+        summary_prompt_id=_text_or_none(values.get("summary_prompt_id")) or settings.summary_prompt_id,
+        summary_system_prompt=(
+            _text_or_none(values.get("summary_system_prompt")) or settings.summary_system_prompt
+        ),
+        summary_user_prompt=(
+            _text_or_none(values.get("summary_user_prompt")) or settings.summary_user_prompt
+        ),
+        summary_prompts_path=(
+            _coerce_path(values.get("summary_prompts_path")) or settings.summary_prompts_path
+        ),
     )
 
 
@@ -140,3 +150,15 @@ def _bool_value(value: Any) -> bool:
         return False
     text = str(value).strip().lower()
     return text in {"1", "true", "yes", "on"}
+
+
+def _resolve_sessdata(settings: Settings, values: Mapping[str, Any]) -> str | None:
+    explicit_present = "sessdata" in values
+    explicit_value = _text_or_none(values.get("sessdata")) if explicit_present else None
+    if explicit_value:
+        return explicit_value
+    if _bool_value(values.get("no_sessdata")):
+        return None
+    if explicit_present:
+        return None
+    return settings.bili_sessdata

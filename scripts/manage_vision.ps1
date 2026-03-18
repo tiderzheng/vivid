@@ -19,8 +19,16 @@ param(
 )
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$apiConfigs = if ($ApiConfigsFile) { $ApiConfigsFile } elseif ($env:VIVID_VISION_API_CONFIGS_FILE) { $env:VIVID_VISION_API_CONFIGS_FILE } else { Join-Path $repoRoot "configs\\vision\\api_configs.json" }
-$prompts = if ($PromptsFile) { $PromptsFile } elseif ($env:VIVID_VISION_PROMPTS_FILE) { $env:VIVID_VISION_PROMPTS_FILE } else { Join-Path $repoRoot "configs\\vision\\prompts.json" }
+
+# Ensure the runtime virtual environment exists.
+$venvPython = & "$PSScriptRoot\ensure_venv.ps1" -RepoRoot $repoRoot
+if (-not $venvPython) {
+    Write-Error "Could not resolve the virtual environment Python executable."
+    exit 1
+}
+
+$apiConfigs = if ($ApiConfigsFile) { $ApiConfigsFile } elseif ($env:VIVID_VISION_API_CONFIGS_FILE) { $env:VIVID_VISION_API_CONFIGS_FILE } else { Join-Path $repoRoot "configs\vision\api_configs.json" }
+$prompts = if ($PromptsFile) { $PromptsFile } elseif ($env:VIVID_VISION_PROMPTS_FILE) { $env:VIVID_VISION_PROMPTS_FILE } else { Join-Path $repoRoot "configs\vision\prompts.json" }
 
 $args = @(
     "-m", "app.tools.vision_admin",
@@ -48,7 +56,7 @@ switch ($Command) {
 
 Push-Location $repoRoot
 try {
-    python @args
+    & $venvPython @args
 } finally {
     Pop-Location
 }
