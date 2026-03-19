@@ -10,6 +10,8 @@ from ..exceptions import VividError
 from ..services.media_store import newest_file
 from ..utils.subprocess_utils import run_command
 
+_TITLE_FETCH_TIMEOUT_SECONDS = 8
+
 
 class DouyinAdapter:
     def __init__(self, script_path: Path | None = None) -> None:
@@ -26,10 +28,12 @@ class DouyinAdapter:
                 capture_output=True,
                 text=True,
                 cwd=script_path.parent,
-                timeout=30,
+                timeout=_TITLE_FETCH_TIMEOUT_SECONDS,
             )
         except subprocess.TimeoutExpired as exc:
-            raise VividError("Douyin title fetch timed out after 30 seconds.") from exc
+            raise VividError(
+                f"Douyin title fetch timed out after {_TITLE_FETCH_TIMEOUT_SECONDS} seconds."
+            ) from exc
         except OSError as exc:
             raise VividError(f"Douyin title fetch failed to start: {exc}") from exc
 

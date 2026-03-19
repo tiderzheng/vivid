@@ -205,6 +205,26 @@ def test_douyin_title_fetch_surfaces_helper_failure(tmp_path, monkeypatch):
         raise AssertionError("non-zero title fetch should raise a detailed error")
 
 
+def test_douyin_title_fetch_times_out_quickly(tmp_path, monkeypatch):
+    helper = tmp_path / "douyin.js"
+    helper.write_text("// helper", encoding="utf-8")
+    monkeypatch.setattr("app.adapters.douyin.shutil.which", lambda name: "C:/Program Files/nodejs/node.exe")
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd=kwargs.get("args", "node"), timeout=kwargs.get("timeout", 0))
+
+    monkeypatch.setattr("app.adapters.douyin.subprocess.run", fake_run)
+
+    adapter = DouyinAdapter(helper)
+
+    try:
+        adapter.get_video_title("https://v.douyin.com/abc/")
+    except VividError as exc:
+        assert "timed out after 8 seconds" in str(exc).lower()
+    else:
+        raise AssertionError("title fetch timeout should raise a dedicated timeout error")
+
+
 def test_ytdlp_extra_headers_are_converted():
     options = _extra_args_to_options(
         ["--add-header", "Referer: https://www.bilibili.com/", "--add-header", "Cookie: SESSDATA=abc"],
