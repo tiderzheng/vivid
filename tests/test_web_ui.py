@@ -1,5 +1,6 @@
 import io
 import time
+from types import SimpleNamespace
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -243,6 +244,85 @@ def test_web_quickread_upload_works(tmp_path, monkeypatch):
     assert payload["ok"] is True
     assert payload["transcript"]["acquisition_method"] == "Internal Whisper base"
     assert "quickread_markdown" in payload["files"]
+
+
+def test_web_quickread_returns_vector_source_files(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    workdir = settings.data_dir / "demo"
+    artifacts_dir = workdir / "artifacts"
+    vector_dir = workdir / "vector_source"
+    artifacts_dir.mkdir(parents=True, exist_ok=True)
+    vector_dir.mkdir(parents=True, exist_ok=True)
+    file_map = {
+        "quickread_markdown": artifacts_dir / "quickread.md",
+        "transcript_text": artifacts_dir / "transcript.txt",
+        "summary_markdown": artifacts_dir / "summary.md",
+        "summary_json": artifacts_dir / "summary.json",
+        "metadata_json": artifacts_dir / "metadata.json",
+        "vector_document_json": vector_dir / "document.json",
+        "vector_chunks_jsonl": vector_dir / "chunks.jsonl",
+        "vector_manifest_json": vector_dir / "manifest.json",
+    }
+    for path in file_map.values():
+        path.write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "app.web.run_quickread",
+        lambda _options: OrchestratorResult(
+            source=SourceInfo(raw_source="local", platform="local", title="demo"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
+            summary=SummaryResult(
+                title="标题",
+                overview="概览",
+                core_points=["a"],
+                controversies=["b"],
+                action_suggestions=["c"],
+                playful_comment="d",
+                provider="test",
+            ),
+            artifacts=SimpleNamespace(
+                workdir=workdir,
+                artifacts_dir=artifacts_dir,
+                quickread_markdown=file_map["quickread_markdown"],
+                transcript_text=file_map["transcript_text"],
+                summary_markdown=file_map["summary_markdown"],
+                summary_json=file_map["summary_json"],
+                metadata_json=file_map["metadata_json"],
+                checkpoint_json=None,
+                vector_source_dir=vector_dir,
+                vector_document_json=file_map["vector_document_json"],
+                vector_chunks_jsonl=file_map["vector_chunks_jsonl"],
+                vector_manifest_json=file_map["vector_manifest_json"],
+            ),
+            rendered="rendered",
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/quickread",
+        data={
+            "project_name": "demo",
+            "whisper_model": "base",
+            "output_format": "both",
+            "platform": "local",
+            "language": "zh",
+            "acquisition_mode": "auto",
+            "transcription_backend": "internal",
+            "vision_backend": "internal",
+        },
+        files={"media_file": ("demo.mp4", b"123", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["files"]["vector_source_dir"].endswith("vector_source")
+    assert payload["files"]["vector_document_json"].endswith("document.json")
+    assert payload["files"]["vector_chunks_jsonl"].endswith("chunks.jsonl")
+    assert payload["files"]["vector_manifest_json"].endswith("manifest.json")
 
 
 def test_web_quickread_passes_sessdata_controls(tmp_path, monkeypatch):

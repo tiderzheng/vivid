@@ -106,14 +106,32 @@ class LlmAdapter:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         parsed = extract_json_block(content)
-        key_points = [str(item).strip() for item in parsed.get("key_points", []) if str(item).strip()]
-        if not key_points:
-            raise VividError(f"{provider_label} returned no key points.")
-        log_event("summary_provider_succeeded", provider=provider_label, key_points=len(key_points))
+        title = str(parsed.get("title") or parsed.get("one_line") or "").strip()
+        overview = str(parsed.get("overview") or parsed.get("detailed_summary") or parsed.get("detailed") or "").strip()
+        core_points = [str(item).strip() for item in parsed.get("core_points", parsed.get("key_points", [])) if str(item).strip()]
+        controversies = [str(item).strip() for item in parsed.get("controversies", []) if str(item).strip()]
+        action_suggestions = [str(item).strip() for item in parsed.get("action_suggestions", []) if str(item).strip()]
+        playful_comment = str(parsed.get("playful_comment") or "").strip()
+        if not title:
+            raise VividError(f"{provider_label} returned no title.")
+        if not overview:
+            raise VividError(f"{provider_label} returned no overview.")
+        if not core_points:
+            raise VividError(f"{provider_label} returned no core points.")
+        if not controversies:
+            raise VividError(f"{provider_label} returned no controversies.")
+        if not action_suggestions:
+            raise VividError(f"{provider_label} returned no action suggestions.")
+        if not playful_comment:
+            raise VividError(f"{provider_label} returned no playful comment.")
+        log_event("summary_provider_succeeded", provider=provider_label, key_points=len(core_points))
         return SummaryResult(
-            one_line=str(parsed.get("one_line", "")).strip(),
-            detailed=str(parsed.get("detailed_summary", "")).strip(),
-            key_points=key_points[:5],
+            title=title,
+            overview=overview,
+            core_points=core_points[:5],
+            controversies=controversies[:3],
+            action_suggestions=action_suggestions[:5],
+            playful_comment=playful_comment,
             provider=provider_label,
         )
 
@@ -127,20 +145,32 @@ class LlmAdapter:
 def fallback_summary(transcript: str) -> SummaryResult:
     sentences = sentence_split(transcript)
     paragraphs = [part.strip() for part in transcript.split("\n\n") if part.strip()]
-    one_line = sentences[0] if sentences else (transcript[:80].strip() or "未能生成一句话总结。")
-    detailed = " ".join(sentences[:4]).strip() if sentences else (paragraphs[0] if paragraphs else transcript[:300].strip())
-    key_points: list[str] = []
+    title = sentences[0] if sentences else (transcript[:80].strip() or "未能生成标题。")
+    overview = " ".join(sentences[:4]).strip() if sentences else (paragraphs[0] if paragraphs else transcript[:300].strip())
+    core_points: list[str] = []
     for item in sentences[:8]:
         candidate = item.lstrip("- ").strip()
-        if candidate and candidate not in key_points:
-            key_points.append(candidate)
-        if len(key_points) >= 5:
+        if candidate and candidate not in core_points:
+            core_points.append(candidate)
+        if len(core_points) >= 5:
             break
-    if not key_points:
-        key_points = [one_line]
+    if not core_points:
+        core_points = [title]
+    controversies = [
+        "逐字稿里没有特别明确的争议点，建议优先核查关键结论的证据来源。",
+    ]
+    action_suggestions = [
+        "把视频提到的人名、机构名、论文名或政策名列出来，优先查一手来源。",
+        "补读该主题的综述、教材章节或官方说明，确认基础概念是否准确。",
+        "对关键数字、因果关系和结论做交叉验证，避免只依赖单一视频说法。",
+    ]
+    playful_comment = "这更像一张速读卡片，先拿来开路，别急着当终局答案。"
     return SummaryResult(
-        one_line=one_line,
-        detailed=detailed,
-        key_points=key_points[:5],
+        title=title,
+        overview=overview,
+        core_points=core_points[:5],
+        controversies=controversies,
+        action_suggestions=action_suggestions,
+        playful_comment=playful_comment,
         provider="rule-based fallback",
     )

@@ -20,6 +20,21 @@
 - Windows: `scripts/vivid_tool.ps1`
 - Linux/macOS: `scripts/vivid_tool.sh`
 
+## 仓库路径持久化
+
+skill wrapper 会把最近一次确认成功的 Vivid 仓库根目录写入：
+
+- `skill/vivid-operator/state/repo_root.json`
+
+解析优先级是：
+
+1. `-VividRoot` / `--vivid-root=...`
+2. `VIVID_REPO_ROOT`
+3. `skill/vivid-operator/state/repo_root.json`
+4. skill 目录内自动检测
+
+这个状态文件只缓存仓库路径，不会存 `SESSDATA`、API Key 或其他敏感信息。
+
 ## 环境前提
 
 系统需要：
@@ -73,6 +88,8 @@ python3 -m venv .venv
 ```bash
 ./skill/vivid-operator/scripts/vivid_operator.sh -Action paths
 ```
+
+如果这是用户第一次告诉 agent 仓库路径，成功执行一次后，后续应优先复用 `skill/vivid-operator/state/repo_root.json`，不要反复问同一个问题。
 
 再检查环境：
 
@@ -134,3 +151,25 @@ python3 -m venv .venv
 - `summary.md`
 - `summary.json`
 - `metadata.json`
+
+同一个工作目录下，还会额外生成：
+
+- `vector_source/document.json`
+- `vector_source/chunks.jsonl`
+- `vector_source/manifest.json`
+
+这组文件是面向未来向量化 / embedding / RAG / 知识库入库准备的程序消费产物。
+如果 agent 的任务和向量数据库有关，优先读取 `vector_source/`，不要优先从 `quickread.md` 反解析。
+
+## Agent 返回要求
+
+当 agent 读取到摘要结果后，应完整返回以下 6 段：
+
+1. 标题
+2. 内容概览
+3. 核心观点
+4. 争议点
+5. 行动建议
+6. 俏皮点评
+
+不要只摘一句标题或几条要点。尤其是 `行动建议`，要把推荐阅读、继续学习方向、以及证真/交叉验证建议一起带上。

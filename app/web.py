@@ -907,6 +907,10 @@ def _serialize_result(result: OrchestratorResult) -> dict[str, Any]:
         "artifacts_dir": str(result.artifacts.artifacts_dir),
         "quickread_markdown": str(result.artifacts.quickread_markdown),
         "transcript_text": str(result.artifacts.transcript_text),
+        "vector_source_dir": str(result.artifacts.vector_source_dir) if result.artifacts.vector_source_dir else None,
+        "vector_document_json": str(result.artifacts.vector_document_json) if result.artifacts.vector_document_json else None,
+        "vector_chunks_jsonl": str(result.artifacts.vector_chunks_jsonl) if result.artifacts.vector_chunks_jsonl else None,
+        "vector_manifest_json": str(result.artifacts.vector_manifest_json) if result.artifacts.vector_manifest_json else None,
         "summary_markdown": str(result.artifacts.summary_markdown),
         "summary_json": str(result.artifacts.summary_json),
         "metadata_json": str(result.artifacts.metadata_json),
@@ -1428,13 +1432,10 @@ def _render_index() -> str:
       if (job.error) lines.push(`<div class="pre">${escapeHtml(job.error)}</div>`);
       if (job.result) {
         const result = job.result;
+        const summary = result.summary || {};
         lines.push(`<h3>${escapeHtml(result.source.title || "未命名任务")}</h3>`);
         lines.push(`<div class="hint">平台：${escapeHtml(result.source.platform || "")}</div>`);
-        lines.push(`<div class="pre">${escapeHtml(result.summary.one_line || "")}</div>`);
-        lines.push(`<div class="pre">${escapeHtml(result.summary.detailed || "")}</div>`);
-        if ((result.summary.key_points || []).length) {
-          lines.push(`<div class="pre">${escapeHtml(result.summary.key_points.join("\\n"))}</div>`);
-        }
+        lines.push(`<div class="pre">${escapeHtml([`标题：${summary.title || summary.one_line || ""}`, "", "内容概览", summary.overview || "", "", "核心观点", ...((summary.core_points || summary.key_points || []).map((item) => `- ${item}`)), "", "争议点", ...((summary.controversies || []).map((item) => `- ${item}`)), "", "行动建议", ...((summary.action_suggestions || []).map((item) => `- ${item}`)), "", "俏皮点评", summary.playful_comment || ""].join("\\n"))}</div>`);
         lines.push(`<div class="pre">${escapeHtml(result.transcript.text || "")}</div>`);
         const files = result.files || {};
         if (files.workdir) {

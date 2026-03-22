@@ -8,3 +8,4 @@ data/**
 configs/web_ui/preferences.json
 dist/
 build/
+skill/vivid-operator/state/repo_root.json

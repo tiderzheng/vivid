@@ -9,6 +9,7 @@ from ..models.summary import SummaryResult
 from ..models.transcript import TranscriptResult
 from .diagnostics import build_error_summary, extract_failure_chain
 from .run_state import checkpoint_path
+from .vector_source_writer import write_vector_source_bundle
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -36,6 +37,11 @@ def save_artifacts(
         metadata_json=artifacts_dir / "metadata.json",
         checkpoint_json=checkpoint_path(workdir),
     )
+    vector_paths = write_vector_source_bundle(workdir, source, transcript, summary, artifacts_dir)
+    bundle.vector_source_dir = vector_paths["vector_source_dir"]
+    bundle.vector_document_json = vector_paths["vector_document_json"]
+    bundle.vector_chunks_jsonl = vector_paths["vector_chunks_jsonl"]
+    bundle.vector_manifest_json = vector_paths["vector_manifest_json"]
     _write_text(bundle.quickread_markdown, rendered.rstrip() + "\n")
     _write_text(bundle.transcript_text, transcript.text.rstrip() + "\n")
     _write_text(
@@ -44,13 +50,29 @@ def save_artifacts(
             [
                 "# Summary",
                 "",
-                summary.one_line,
+                "## 标题",
                 "",
-                summary.detailed,
+                summary.title or "[空]",
                 "",
-                "## Key Points",
+                "## 内容概览",
                 "",
-                *[f"- {item}" for item in summary.key_points],
+                summary.overview or "[空]",
+                "",
+                "## 核心观点",
+                "",
+                *([f"- {item}" for item in summary.core_points] or ["- [空]"]),
+                "",
+                "## 争议点",
+                "",
+                *([f"- {item}" for item in summary.controversies] or ["- [空]"]),
+                "",
+                "## 行动建议",
+                "",
+                *([f"- {item}" for item in summary.action_suggestions] or ["- [空]"]),
+                "",
+                "## 俏皮点评",
+                "",
+                summary.playful_comment or "[空]",
                 "",
             ]
         ),
@@ -59,9 +81,7 @@ def save_artifacts(
         bundle.summary_json,
         json.dumps(
             {
-                "one_line": summary.one_line,
-                "detailed": summary.detailed,
-                "key_points": summary.key_points,
+                **summary.to_payload(),
                 "provider": summary.provider,
                 "output_format": output_format,
             },
@@ -87,6 +107,10 @@ def save_artifacts(
                 "saved_files": {
                     "quickread_markdown": str(bundle.quickread_markdown),
                     "transcript_text": str(bundle.transcript_text),
+                    "vector_source_dir": str(bundle.vector_source_dir) if bundle.vector_source_dir else None,
+                    "vector_document_json": str(bundle.vector_document_json) if bundle.vector_document_json else None,
+                    "vector_chunks_jsonl": str(bundle.vector_chunks_jsonl) if bundle.vector_chunks_jsonl else None,
+                    "vector_manifest_json": str(bundle.vector_manifest_json) if bundle.vector_manifest_json else None,
                     "summary_markdown": str(bundle.summary_markdown),
                     "summary_json": str(bundle.summary_json),
                     "metadata_json": str(bundle.metadata_json),

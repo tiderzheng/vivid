@@ -70,6 +70,7 @@ def test_build_paths_payload_includes_shell_scripts(tmp_path):
     payload = build_paths_payload(settings)
     assert payload["scripts"]["vivid_tool_sh"].endswith("vivid_tool.sh")
     assert payload["skill"]["wrapper_sh"].endswith("vivid_operator.sh")
+    assert payload["skill"]["repo_root_state"].endswith("skill\\vivid-operator\\state\\repo_root.json")
     assert payload["tools"]["helper_paths"]["bili"].endswith("bili.py")
     assert payload["tools"]["helper_paths"]["douyin"].endswith("douyin.js")
 

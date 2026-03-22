@@ -12,8 +12,11 @@
 
 如果自动检测失败：
 
-- 让用户提供 Vivid 仓库路径
-- 或让用户设置 `VIVID_REPO_ROOT`
+1. 先看 `skill/vivid-operator/state/repo_root.json`
+2. 再看 `VIVID_REPO_ROOT`
+3. 还不行再让用户提供 Vivid 仓库路径
+
+一旦用户给出了有效路径并成功执行 wrapper，后续应优先复用状态文件，不要重复询问。
 
 ## 1. 环境检查
 
@@ -65,6 +68,15 @@
 4. `error_summary`
 5. `failure_chain`
 
+如果成功拿到摘要，向用户返回时必须完整覆盖：
+
+1. 标题
+2. 内容概览
+3. 核心观点
+4. 争议点
+5. 行动建议
+6. 俏皮点评
+
 ## 3. Bilibili `SESSDATA` 规则
 
 如果是 Bilibili：
@@ -83,6 +95,7 @@
 成功后读取：
 
 - `./data/项目名/artifacts/`
+- `./data/项目名/vector_source/`
 
 重点文件：
 
@@ -90,3 +103,8 @@
 - `transcript.txt`
 - `summary.md`
 - `metadata.json`
+- `vector_source/document.json`
+- `vector_source/chunks.jsonl`
+- `vector_source/manifest.json`
+
+如果目标是后续向量化 / embedding / RAG / 知识库入库，优先使用 `vector_source/`。

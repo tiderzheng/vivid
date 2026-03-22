@@ -59,21 +59,25 @@ def transcript_from_payload(payload: dict[str, Any]) -> TranscriptResult:
 
 
 def summary_to_payload(summary: SummaryResult) -> dict[str, Any]:
-    return {
-        "one_line": summary.one_line,
-        "detailed": summary.detailed,
-        "key_points": list(summary.key_points),
-        "provider": summary.provider,
-    }
+    return summary.to_payload()
 
 
 def summary_from_payload(payload: dict[str, Any]) -> SummaryResult:
     return SummaryResult(
-        one_line=str(payload.get("one_line") or ""),
-        detailed=str(payload.get("detailed") or ""),
-        key_points=[str(item) for item in payload.get("key_points", []) or []],
+        title=str(payload.get("title") or payload.get("one_line") or ""),
+        overview=str(payload.get("overview") or payload.get("detailed") or ""),
+        core_points=[str(item) for item in payload.get("core_points", payload.get("key_points", [])) or []],
+        controversies=[str(item) for item in payload.get("controversies", []) or []],
+        action_suggestions=[str(item) for item in payload.get("action_suggestions", []) or []],
+        playful_comment=str(payload.get("playful_comment") or ""),
         provider=str(payload.get("provider") or "checkpoint"),
     )
+
+
+def _payload_has_summary(summary: dict[str, Any] | None) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    return bool(_text_or_none(summary.get("overview")) or _text_or_none(summary.get("detailed")) or _text_or_none(summary.get("title")) or _text_or_none(summary.get("one_line")))
 
 
 def available_resume_stages(payload: dict[str, Any]) -> list[str]:
@@ -86,13 +90,12 @@ def available_resume_stages(payload: dict[str, Any]) -> list[str]:
         stages.append("transcription")
     if isinstance(transcript, dict) and transcript.get("text"):
         stages.append("summarize")
-    if isinstance(transcript, dict) and transcript.get("text") and isinstance(summary, dict) and summary.get("detailed"):
+    if isinstance(transcript, dict) and transcript.get("text") and _payload_has_summary(summary):
         stages.append("render")
     if (
         isinstance(transcript, dict)
         and transcript.get("text")
-        and isinstance(summary, dict)
-        and summary.get("detailed")
+        and _payload_has_summary(summary)
         and _text_or_none(rendered)
     ):
         stages.append("artifacts")

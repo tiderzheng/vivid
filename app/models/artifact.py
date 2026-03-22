@@ -14,3 +14,7 @@ class ArtifactBundle:
     summary_json: Path
     metadata_json: Path
     checkpoint_json: Path | None = None
+    vector_source_dir: Path | None = None
+    vector_document_json: Path | None = None
+    vector_chunks_jsonl: Path | None = None
+    vector_manifest_json: Path | None = None

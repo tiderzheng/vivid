@@ -154,6 +154,7 @@ def build_paths_payload(settings: Settings) -> dict[str, Any]:
             "skill_md": str(skill_root / "SKILL.md"),
             "wrapper_ps1": str(skill_root / "scripts" / "vivid_operator.ps1"),
             "wrapper_sh": str(skill_root / "scripts" / "vivid_operator.sh"),
+            "repo_root_state": str(skill_root / "state" / "repo_root.json"),
         },
         "data": {"default_root": str(settings.data_dir)},
         "runtime": {

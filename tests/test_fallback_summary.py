@@ -44,7 +44,13 @@ def test_llm_adapter_falls_back_when_provider_returns_invalid_json(monkeypatch):
     result = adapter.summarize("第一句。第二句。第三句。")
 
     assert result.provider == "rule-based fallback"
-    assert result.one_line
+    assert result.title
+    assert result.overview
+    assert result.core_points
+    assert result.controversies
+    assert result.action_suggestions
+    assert result.playful_comment
+    assert result.one_line == result.title
 
 
 def test_llm_adapter_uses_custom_summary_prompt(monkeypatch):
@@ -59,7 +65,14 @@ def test_llm_adapter_uses_custom_summary_prompt(monkeypatch):
                 "choices": [
                     {
                         "message": {
-                            "content": '{"one_line":"一句话","detailed_summary":"详细总结","key_points":["a","b","c"]}'
+                            "content": (
+                                '{"title":"一句话标题",'
+                                '"overview":"内容概览",'
+                                '"core_points":["观点1","观点2","观点3"],'
+                                '"controversies":["争议1"],'
+                                '"action_suggestions":["建议1","建议2","建议3"],'
+                                '"playful_comment":"俏皮点评"}'
+                            )
                         }
                     }
                 ]
@@ -88,3 +101,9 @@ def test_llm_adapter_uses_custom_summary_prompt(monkeypatch):
     assert result.provider == "SiliconFlow model-a"
     assert captured["messages"][0]["content"] == "custom-system"
     assert captured["messages"][1]["content"] == "请用中文总结：\n这里是逐字稿。"
+    assert result.title == "一句话标题"
+    assert result.overview == "内容概览"
+    assert result.core_points == ["观点1", "观点2", "观点3"]
+    assert result.controversies == ["争议1"]
+    assert result.action_suggestions == ["建议1", "建议2", "建议3"]
+    assert result.playful_comment == "俏皮点评"

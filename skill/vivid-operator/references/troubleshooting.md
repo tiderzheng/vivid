@@ -1,5 +1,17 @@
 # Troubleshooting（瞬知 / Vivid）
 
+## 找不到 Vivid 仓库
+
+按下面顺序检查：
+
+1. `skill/vivid-operator/state/repo_root.json`
+2. `VIVID_REPO_ROOT`
+3. `-VividRoot` / `--vivid-root=...`
+
+如果用户刚刚提供过仓库路径，但 agent 又忘了，优先回到状态文件里找，不要重复索要。
+
+注意：状态文件只应该存仓库路径，不能存 `SESSDATA`、API Key 之类的敏感信息。
+
 ## `python` 不存在
 
 先安装 Python 3.10+。

@@ -12,6 +12,13 @@
 - Windows: `scripts/vivid_tool.ps1`
 - Linux/macOS: `scripts/vivid_tool.sh`
 
+wrapper 的仓库定位优先级：
+
+1. `-VividRoot` / `--vivid-root=...`
+2. `VIVID_REPO_ROOT`
+3. `skill/vivid-operator/state/repo_root.json`
+4. skill 目录内自动检测
+
 ## `paths`
 
 作用：
@@ -115,20 +122,29 @@ Bilibili 专用参数：
   - `acquisition_method`
   - `text`
 - `result.summary`
-  - `one_line`
-  - `detailed`
-  - `key_points`
+  - `title`
+  - `overview`
+  - `core_points`
+  - `controversies`
+  - `action_suggestions`
+  - `playful_comment`
   - `provider`
 - `result.artifacts`
   - `workdir`
   - `artifacts_dir`
+  - `vector_source_dir`
+  - `vector_document_json`
+  - `vector_chunks_jsonl`
+  - `vector_manifest_json`
 - `result.failure_chain`
 - `result.error_summary`
 
 说明：
 
 - `result.artifacts.artifacts_dir` 是读取产物文件的主要目录
+- `result.artifacts.vector_source_dir` 是后续向量化 / embedding 的优先入口
 - 早期失败时，`result` 可能为 `null`
+- 为兼容旧调用方，`result.summary` 里仍可能同时出现 `one_line` / `detailed` / `key_points`，但新 agent 应优先读取新字段
 
 当 Bilibili 会话过期时，`quickread` 可能返回：
 

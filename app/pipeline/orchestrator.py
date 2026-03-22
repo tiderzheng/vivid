@@ -16,7 +16,7 @@ from ..services.cleanup import cleanup_media
 from ..services.diagnostics import build_diagnostic_event, build_error_summary, extract_failure_chain
 from ..services.artifact_writer import save_artifacts
 from ..services.pathing import make_staging_workdir, move_to_final_workdir, relocate_path
-from ..services.project_naming import derive_title, infer_video_title
+from ..services.project_naming import derive_title, infer_video_title, sanitize_name
 from ..services.run_state import (
     checkpoint_path,
     load_run_state,
@@ -57,14 +57,16 @@ class OrchestratorResult:
                 "text": self.transcript.text,
             },
             "summary": {
-                "one_line": self.summary.one_line,
-                "detailed": self.summary.detailed,
-                "key_points": self.summary.key_points,
+                **self.summary.to_payload(),
                 "provider": self.summary.provider,
             },
             "artifacts": {
                 "workdir": str(self.artifacts.workdir),
                 "artifacts_dir": str(self.artifacts.artifacts_dir),
+                "vector_source_dir": str(self.artifacts.vector_source_dir) if self.artifacts.vector_source_dir else None,
+                "vector_document_json": str(self.artifacts.vector_document_json) if self.artifacts.vector_document_json else None,
+                "vector_chunks_jsonl": str(self.artifacts.vector_chunks_jsonl) if self.artifacts.vector_chunks_jsonl else None,
+                "vector_manifest_json": str(self.artifacts.vector_manifest_json) if self.artifacts.vector_manifest_json else None,
             },
             "rendered": self.rendered,
             "diagnostics": self.diagnostics,
@@ -184,6 +186,7 @@ def run_quickread(
                 {"acquisition_method": transcript.acquisition_method},
             )
         # 确定项目标题优先级：1. 用户指定 2. 获取的平台标题 3. 从媒体文件推断 4. 从URL提取
+        using_douyin_fallback_title = False
         title: str
         if saved_title:
             title = saved_title
@@ -193,6 +196,7 @@ def run_quickread(
             title = fetched_title
         else:
             title = infer_video_title(options.source, transcript.media_path, workdir)
+            using_douyin_fallback_title = platform == "douyin"
         _emit_event(recording_callback, "title", "确定项目名称", {"title": title})
         if (not resume_mode) or not resume_state.get("title"):
             final_workdir = move_to_final_workdir(workdir, options.data_dir, title)
@@ -218,7 +222,28 @@ def run_quickread(
                 transcript.text,
                 event_callback=recording_callback,
             )
-            update_run_state(workdir, summary=summary_to_payload(summary), last_completed_stage="summarize")
+            workdir, title = _maybe_promote_douyin_summary_title(
+                workdir=workdir,
+                data_dir=options.data_dir,
+                title=title,
+                platform=platform,
+                using_douyin_fallback_title=using_douyin_fallback_title,
+                summary=summary,
+                transcript=transcript,
+                source_value=options.source,
+                callback=recording_callback,
+            )
+            source.title = title
+            update_run_state(
+                workdir,
+                title=title,
+                platform=platform,
+                workdir=str(workdir),
+                media_path=str(transcript.media_path) if transcript.media_path else None,
+                transcript=transcript_to_payload(transcript),
+                summary=summary_to_payload(summary),
+                last_completed_stage="summarize",
+            )
         else:
             _emit_event(recording_callback, "summarize", "已从断点恢复总结")
         _emit_event(recording_callback, "summarize_completed", "总结生成完成", {"provider": summary.provider})
@@ -338,3 +363,36 @@ def _resume_media_path(resume_state: dict[str, Any], resume_stage: str | None) -
     if not media_path:
         raise ValueError("resume stage 'transcription' requires a saved media checkpoint")
     return Path(str(media_path)).expanduser()
+
+
+def _maybe_promote_douyin_summary_title(
+    *,
+    workdir: Path,
+    data_dir: Path,
+    title: str,
+    platform: str,
+    using_douyin_fallback_title: bool,
+    summary: SummaryResult,
+    transcript: TranscriptResult,
+    source_value: str,
+    callback: QuickreadEventCallback | None,
+) -> tuple[Path, str]:
+    if platform != "douyin" or not using_douyin_fallback_title:
+        return workdir, title
+    summary_title = sanitize_name(summary.one_line, fallback=title)
+    if not summary_title or summary_title == title:
+        return workdir, title
+    renamed_workdir = move_to_final_workdir(workdir, data_dir, summary_title)
+    transcript.media_path = relocate_path(transcript.media_path, workdir, renamed_workdir)
+    transcript.audio_path = relocate_path(transcript.audio_path, workdir, renamed_workdir)
+    _emit_event(
+        callback,
+        "title_from_summary",
+        "抖音标题获取失败，已改用 AI 总结作为项目名称",
+        {
+            "source": source_value,
+            "previous_title": title,
+            "title": summary_title,
+        },
+    )
+    return renamed_workdir, summary_title

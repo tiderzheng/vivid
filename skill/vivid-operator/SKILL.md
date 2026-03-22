@@ -46,11 +46,33 @@ description: Operate the Vivid project end-to-end through one stable command sur
 
 **瞬知 / Vivid** 主程序可以通过以下方式定位：
 
+优先级：
+
+1. `-VividRoot`
+2. `VIVID_REPO_ROOT`
+3. `skill/vivid-operator/state/repo_root.json`
+4. skill 目录内自动检测
+5. 询问用户
+
 ### 方式1：自动检测（推荐）
 
 如果skill目录位于Vivid仓库的 `skill/vivid-operator/` 路径下，会自动检测主程序位置。
 
-### 方式2：环境变量
+### 方式2：skill 状态文件
+
+wrapper 会把最近一次确认成功的仓库路径写入：
+
+- `skill/vivid-operator/state/repo_root.json`
+
+这个文件只用于持久化 **Vivid 仓库根目录**，方便 agent 在上下文丢失后恢复定位。
+
+不要把下面这些敏感信息写进去：
+
+- `SESSDATA`
+- API Key
+- 任何用户私密凭证
+
+### 方式3：环境变量
 
 设置环境变量 `VIVID_REPO_ROOT`：
 
@@ -62,7 +84,7 @@ $env:VIVID_REPO_ROOT = "D:\ai\quicker_video\Vivid"
 export VIVID_REPO_ROOT=/home/user/vivid
 ```
 
-### 方式3：参数指定
+### 方式4：参数指定
 
 ```powershell
 ./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -VividRoot "D:\ai\quicker_video\Vivid" -Source "视频链接"
@@ -89,11 +111,21 @@ export VIVID_REPO_ROOT=/home/user/vivid
 ./skill/vivid-operator/scripts/vivid_operator.sh -Action paths
 ```
 
-如果成功，说明已自动检测到Vivid仓库，可以继续使用。
+如果成功，说明 wrapper 已成功解析 Vivid 仓库位置。此时还应注意：
+
+- wrapper 会把成功结果写入 `skill/vivid-operator/state/repo_root.json`
+- 后续即使上下文丢失，agent 也应该优先从这个文件恢复仓库路径
+- 不要反复向用户问同一个仓库路径问题
 
 ### 步骤2：如果自动检测失败
 
-如果提示"无法找到Vivid仓库"，请**询问用户**：
+如果提示"无法找到Vivid仓库"，请按下面顺序处理：
+
+1. 先检查 `skill/vivid-operator/state/repo_root.json`
+2. 再检查 `VIVID_REPO_ROOT`
+3. 如果两者都没有，才询问用户
+
+询问用户时，用这类表达：
 
 > "我需要使用瞬知/Vivid程序来处理视频，但没有找到它的安装位置。
 > 
@@ -132,6 +164,12 @@ C:\OpenClaw\skills\vivid-operator\scripts\vivid_operator.ps1 -Action quickread -
 export VIVID_REPO_ROOT="/用户提供的/路径"
 /opt/skills/vivid-operator/scripts/vivid_operator.sh -Action quickread -Source "视频链接"
 ```
+
+补充要求：
+
+- 一旦用户提供了仓库路径，后续第一次成功执行 wrapper 后，这个路径就应该写入 `skill/vivid-operator/state/repo_root.json`
+- 之后 agent 需要优先相信这个状态文件，而不是再次向用户确认
+- 如果状态文件里的路径失效，再重新问用户
 
 **如果用户说没有安装**：
 
@@ -309,8 +347,34 @@ pip install openai-whisper
 2. **获取视频标题**（Bilibili/抖音）- 自动获取真实视频标题用于项目命名
 3. **下载 / 取字幕 / 取本地文件**
 4. **转录或 OCR** - 默认音频转录，失败自动回退OCR
-5. **摘要** - AI生成一句话总结、详细摘要、关键要点
+5. **摘要** - AI生成标题、内容概览、核心观点、争议点、行动建议、俏皮点评
 6. **落盘产物** - 输出结构化文档
+
+## AI 总结返回规范
+
+当 `quickread` 成功后，如果拿到了 `result.summary`、`summary.json` 或 `summary.md`，agent 必须按下面 6 段完整返回给用户：
+
+1. 标题
+2. 内容概览
+3. 核心观点
+4. 争议点
+5. 行动建议
+6. 俏皮点评
+
+其中 `行动建议` 必须保留这些信息：
+
+- 推荐相关阅读
+- 继续学习什么
+- 如何证真 / 交叉验证 / 辅助学习
+
+禁止只返回下面这些残缺版本：
+
+- 只摘标题
+- 只摘核心观点
+- 只给一段“简短总结”
+- 只贴 `key_points`
+
+如果控制面里同时有结构化字段和 `summary.md`，优先使用结构化字段；如果结构化字段缺失，再回退读取 `summary.md` / `summary.json`。
 
 ### 项目命名优化
 
@@ -388,6 +452,10 @@ Linux/macOS:
 
 `./data/项目名/artifacts/`
 
+同一个工作目录下，还会额外生成：
+
+`./data/项目名/vector_source/`
+
 主要文件：
 
 - `quickread.md`
@@ -395,6 +463,19 @@ Linux/macOS:
 - `summary.md`
 - `summary.json`
 - `metadata.json`
+- `vector_source/document.json`
+- `vector_source/chunks.jsonl`
+- `vector_source/manifest.json`
+
+如果任务和下面这些目标有关：
+
+- 向量化
+- embedding
+- RAG
+- 知识库入库
+- 向量数据库
+
+agent 应优先读取 `vector_source/`，不要先从 `quickread.md`、`summary.md` 这类人类阅读版产物反解析。
 
 ## 补充说明
 
