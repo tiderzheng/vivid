@@ -20,6 +20,28 @@
 - **瞬知 / Vivid** = 真正执行全流程的程序
 - `vivid-operator` = 调用 **瞬知** 的统一 skill
 
+## 如果你是让 AI Agent 来用
+
+如果你不是自己敲命令，而是让 `Codex`、`OpenClaw`、`Claude` 一类 agent 来操作，最省事的方式就是：
+
+1. 把 `vivid-operator` skill 放到 agent 能读取的位置
+2. 直接把一段标准说明话术发给 agent
+3. 让 agent 按 skill 规则执行 `paths -> doctor -> quickread`
+
+标准说明话术模板已经整理在：
+
+- `skill/vivid-operator/README.md`
+
+建议优先看里面这些可复制模板：
+
+- 最短通用版
+- 本地模式首配版
+- 云端模式首配版
+- Bilibili 会话交互版
+- 向量化产物版
+
+也就是说，很多场景下你确实就是“把 skill 甩给 agent，再补一段当前任务说明”就够了。
+
 ### 入口边界
 
 这两层入口面向的对象不同：
@@ -114,19 +136,30 @@
 
 默认策略：
 
-1. `SiliconFlow`
-2. `DashScope`
-3. 规则摘要兜底
+1. 按 `configs/summary/providers.json` 里的 OpenAI 兼容 provider 顺序尝试
+2. 默认内置 `SiliconFlow`
+3. 默认内置 `DashScope`
+4. 规则摘要兜底
 
-摘要提示词现在也支持配置化：
+摘要阶段现在有两类配置：
 
-- 默认文件：`configs/summary/prompts.json`
-- 默认模板占位符：`{transcript}`
-- 可用环境变量：
+- prompt 模板：`configs/summary/prompts.json`
+- provider 列表：`configs/summary/providers.json`
+
+其中 provider 统一按 **OpenAI 兼容 chat completions** 接口调用，配置字段是：
+
+- `base_url`
+- `model`
+- `api_key_env`
+
+prompt 模板默认占位符：`{transcript}`
+
+可用环境变量：
   - `VIVID_SUMMARY_PROMPT_ID`
   - `VIVID_SUMMARY_SYSTEM_PROMPT`
   - `VIVID_SUMMARY_USER_PROMPT`
   - `VIVID_SUMMARY_PROMPTS_FILE`
+  - `VIVID_SUMMARY_PROVIDERS_FILE`
 
 ### 5. 产物输出
 
@@ -383,10 +416,19 @@ Web UI 支持：
 - `VIVID_SUMMARY_PROMPT_ID`
 - `VIVID_SUMMARY_SYSTEM_PROMPT`
 - `VIVID_SUMMARY_USER_PROMPT`
+- `VIVID_SUMMARY_PROVIDERS_FILE`
 
-默认摘要模板文件：
+默认摘要配置文件：
 
 - `configs/summary/prompts.json`
+- `configs/summary/providers.json`
+
+其中 `providers.json` 是 OpenAI 兼容 provider 列表。
+默认内置 `SiliconFlow` 和 `DashScope`，但你也可以改成其他 OpenAI 兼容服务，只要提供：
+
+- `base_url`
+- `model`
+- `api_key_env`
 
 ### OCR AI
 

@@ -107,6 +107,9 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
         summary_prompts_path=(
             _coerce_path(values.get("summary_prompts_path")) or settings.summary_prompts_path
         ),
+        summary_providers_path=(
+            _coerce_path(values.get("summary_providers_path")) or settings.summary_providers_path
+        ),
     )
 
 

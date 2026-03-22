@@ -50,7 +50,7 @@ description: Operate the Vivid project end-to-end through one stable command sur
 
 1. `-VividRoot`
 2. `VIVID_REPO_ROOT`
-3. `skill/vivid-operator/state/repo_root.json`
+3. `skill/vivid-operator/state/skill_state.json`
 4. skill 目录内自动检测
 5. 询问用户
 
@@ -60,17 +60,79 @@ description: Operate the Vivid project end-to-end through one stable command sur
 
 ### 方式2：skill 状态文件
 
-wrapper 会把最近一次确认成功的仓库路径写入：
+wrapper 会把稳定默认值写入：
 
-- `skill/vivid-operator/state/repo_root.json`
+- `skill/vivid-operator/state/skill_state.json`
 
-这个文件只用于持久化 **Vivid 仓库根目录**，方便 agent 在上下文丢失后恢复定位。
+当前持久化这些字段：
+
+- `repo_root`
+- `default_whisper_model`
+- `default_data_dir`
+- `execution_mode`
+- `artifact_target`
+- `cloud_profile`
+- `cloud_base_url`
+
+它们分别对应：
+
+- Vivid 仓库根目录
+- Whisper 默认模型
+- 所有解析产物默认落到哪个输出根目录
+- 默认走本地还是云端
+- 云端执行后产物落本地、云端还是两边
+- 云端连接配置名
+- 远端 Vivid Web API 地址
+
+agent 在上下文丢失后，必须优先从这个文件恢复这些稳定信息。
 
 不要把下面这些敏感信息写进去：
 
 - `SESSDATA`
 - API Key
 - 任何用户私密凭证
+
+### 方式2.1：默认值优先级
+
+默认 Whisper 模型和默认输出目录的选择顺序是：
+
+1. 显式参数 `-Model` / `-DataDir`
+2. 环境变量 `VIVID_DEFAULT_MODEL` / `VIVID_DATA_DIR`
+3. `skill/vivid-operator/state/skill_state.json`
+4. 主程序自己的默认值
+
+只有当 `skill_state.json` 里缺少对应字段时，agent 才应该向用户询问一次。
+
+执行模式的选择顺序是：
+
+1. 显式参数 `-ExecutionMode` / `-ArtifactTarget` / `-CloudProfile` / `-CloudBaseUrl`
+2. 环境变量 `VIVID_EXECUTION_MODE` / `VIVID_ARTIFACT_TARGET` / `VIVID_CLOUD_PROFILE` / `VIVID_CLOUD_BASE_URL`
+3. `skill/vivid-operator/state/skill_state.json`
+4. 默认 `local`
+
+模式说明：
+
+- `local`：使用本机资源、本机依赖、本机工作目录
+- `cloud`：调用远端 Vivid Web API，由云端执行
+
+产物策略：
+
+- `local_only`：云端执行后把核心产物同步回本地
+- `cloud_only`：只保留云端产物引用
+- `both`：云端保留，本地也同步一份
+
+`cloud_profile` 是可选项。
+它只有在用户已经配置了命名云端地址时才有意义，例如：
+
+- `VIVID_CLOUD_PROFILE_PROD_BASE_URL=https://cloud.example`
+
+如果没有 profile 映射，agent 应该直接向用户要 `cloud_base_url`，不要把 `cloud_profile` 当成必填项。
+
+补充边界：
+
+- 当前仓库里的 `cloud` 模式是“skill 直接调用远端 Vivid Web API”
+- 如果宿主平台本身走 MCP，可以在仓库外再加 MCP bridge 去转发到这个 Web API
+- 不要把“外部 MCP bridge”理解成“当前 Vivid 仓库已经内建 MCP server”
 
 ### 方式3：环境变量
 
@@ -113,15 +175,29 @@ export VIVID_REPO_ROOT=/home/user/vivid
 
 如果成功，说明 wrapper 已成功解析 Vivid 仓库位置。此时还应注意：
 
-- wrapper 会把成功结果写入 `skill/vivid-operator/state/repo_root.json`
+- wrapper 会把成功结果写入 `skill/vivid-operator/state/skill_state.json`
 - 后续即使上下文丢失，agent 也应该优先从这个文件恢复仓库路径
 - 不要反复向用户问同一个仓库路径问题
+
+如果 `skill_state.json` 里还缺少 `default_whisper_model` 或 `default_data_dir`：
+
+- 先分别向用户确认一次
+- 然后用 `-Model` / `-DataDir` 执行一次，让 wrapper 把它们写入状态文件
+- 之后 agent 应优先复用状态文件，不要重复问
+
+如果 `skill_state.json` 里还缺少 `execution_mode` / `artifact_target` / `cloud_profile` / `cloud_base_url`：
+
+- 先问用户默认走本地还是云端
+- 如果用户选云端，再问产物只存本地、只存云端还是两边都存
+- 如果用户已经有命名好的云端 profile，再问 profile 名
+- 否则直接问远端 Vivid Web API 地址
+- 成功执行一次后，把这些值写回状态文件
 
 ### 步骤2：如果自动检测失败
 
 如果提示"无法找到Vivid仓库"，请按下面顺序处理：
 
-1. 先检查 `skill/vivid-operator/state/repo_root.json`
+1. 先检查 `skill/vivid-operator/state/skill_state.json`
 2. 再检查 `VIVID_REPO_ROOT`
 3. 如果两者都没有，才询问用户
 
@@ -167,9 +243,14 @@ export VIVID_REPO_ROOT="/用户提供的/路径"
 
 补充要求：
 
-- 一旦用户提供了仓库路径，后续第一次成功执行 wrapper 后，这个路径就应该写入 `skill/vivid-operator/state/repo_root.json`
+- 一旦用户提供了仓库路径，后续第一次成功执行 wrapper 后，这个路径就应该写入 `skill/vivid-operator/state/skill_state.json`
+- 如果用户第一次确认了默认 Whisper 模型或默认输出目录，也应通过一次成功执行把它们写进去
+- 如果用户第一次确认了云端模式、产物策略或远端地址，也应通过一次成功执行把它们写进去
+- 如果用户使用的是 profile 模式，再把 `cloud_profile` 写进去
 - 之后 agent 需要优先相信这个状态文件，而不是再次向用户确认
 - 如果状态文件里的路径失效，再重新问用户
+- 如果状态文件里缺的是模型或输出目录，只补问缺失项，不要整套重问
+- 如果状态文件里缺的是执行模式或云端配置，也只补问缺失项
 
 **如果用户说没有安装**：
 

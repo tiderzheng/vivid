@@ -65,6 +65,7 @@ class Settings:
     summary_system_prompt: str | None = None
     summary_user_prompt: str | None = None
     summary_prompts_path: Path | None = None
+    summary_providers_path: Path | None = None
 
 
 def load_settings() -> Settings:
@@ -164,6 +165,12 @@ def load_settings() -> Settings:
             os.environ.get(
                 "VIVID_SUMMARY_PROMPTS_FILE",
                 str(repo_root / "configs" / "summary" / "prompts.json"),
+            )
+        ),
+        summary_providers_path=Path(
+            os.environ.get(
+                "VIVID_SUMMARY_PROVIDERS_FILE",
+                str(repo_root / "configs" / "summary" / "providers.json"),
             )
         ),
     )

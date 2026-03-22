@@ -41,3 +41,22 @@ class SummaryPromptConfig:
     prompt_id: str | None = None
     system_prompt: str = DEFAULT_SUMMARY_SYSTEM_PROMPT
     user_prompt_template: str = DEFAULT_SUMMARY_USER_PROMPT
+
+
+@dataclass(slots=True)
+class SummaryProviderItem:
+    id: str
+    name: str
+    base_url: str
+    model: str
+    api_key_env: str
+    enabled: bool = True
+
+
+@dataclass(slots=True)
+class SummaryProviderConfig:
+    provider_id: str
+    provider_name: str
+    base_url: str
+    model: str
+    api_key: str

@@ -12,6 +12,7 @@ from .config import Settings, load_settings
 from .exceptions import BilibiliSessdataExpiredError
 from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
+from .services.cloud_bridge import CloudQuickreadError, run_cloud_quickread
 from .services.dependency_bootstrap import ensure_opencv_dependency
 from .services.ffmpeg_locator import inspect_ffmpeg
 from .subsystems.transcription import TranscriptionPreset, load_transcription_store
@@ -38,6 +39,15 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-DataDir", "--data-dir")
     quickread.add_argument("-Platform", "--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
     quickread.add_argument("-Model", "--model", choices=["tiny", "base", "small", "medium", "large"])
+    quickread.add_argument("-ExecutionMode", "--execution-mode", choices=["local", "cloud"], default="local")
+    quickread.add_argument(
+        "-ArtifactTarget",
+        "--artifact-target",
+        choices=["local_only", "cloud_only", "both"],
+        default="local_only",
+    )
+    quickread.add_argument("-CloudProfile", "--cloud-profile")
+    quickread.add_argument("-CloudBaseUrl", "--cloud-base-url")
     quickread.add_argument("-Sessdata", "--sessdata")
     quickread.add_argument("-NoSessdata", "--no-sessdata", action="store_true")
     quickread.add_argument("-FfmpegBin", "--ffmpeg-bin")
@@ -53,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-SummarySystemPrompt", "--summary-system-prompt")
     quickread.add_argument("-SummaryUserPrompt", "--summary-user-prompt")
     quickread.add_argument("-SummaryPromptsFile", "--summary-prompts-file")
+    quickread.add_argument("-SummaryProvidersFile", "--summary-providers-file")
     quickread.add_argument("-VisionApiConfigId", "--vision-api-config-id")
     quickread.add_argument("-VisionTimeout", "--vision-timeout", type=int)
     quickread.add_argument("-VisionSampleMs", "--vision-sample-ms", type=int)
@@ -154,15 +165,22 @@ def build_paths_payload(settings: Settings) -> dict[str, Any]:
             "skill_md": str(skill_root / "SKILL.md"),
             "wrapper_ps1": str(skill_root / "scripts" / "vivid_operator.ps1"),
             "wrapper_sh": str(skill_root / "scripts" / "vivid_operator.sh"),
-            "repo_root_state": str(skill_root / "state" / "repo_root.json"),
+            "skill_state": str(skill_root / "state" / "skill_state.json"),
+            "repo_root_state": str(skill_root / "state" / "skill_state.json"),
+            "execution_modes": ["local", "cloud"],
+            "artifact_targets": ["local_only", "cloud_only", "both"],
         },
         "data": {"default_root": str(settings.data_dir)},
         "runtime": {
             "ffmpeg_bin": settings.ffmpeg_bin,
             "whisper_root": str(settings.whisper_root) if settings.whisper_root else None,
+            "default_model": settings.default_model,
             "acquisition_mode": settings.acquisition_mode,
             "transcription_backend": settings.transcription_backend,
             "vision_backend": settings.vision_backend,
+            "cloud_base_url_env": "VIVID_CLOUD_BASE_URL",
+            "cloud_profile_env": "VIVID_CLOUD_PROFILE",
+            "cloud_profile_base_url_env_pattern": "VIVID_CLOUD_PROFILE_<PROFILE>_BASE_URL",
         },
         "configs": {
             "vision": {
@@ -173,6 +191,7 @@ def build_paths_payload(settings: Settings) -> dict[str, Any]:
             "summary": {
                 "root": str(settings.repo_root / "configs" / "summary"),
                 "prompts": str(settings.summary_prompts_path) if settings.summary_prompts_path else None,
+                "providers": str(settings.summary_providers_path) if settings.summary_providers_path else None,
             },
             "transcription": {
                 "root": str(settings.repo_root / "configs" / "transcription"),
@@ -305,6 +324,10 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
                 "exists": bool(settings.summary_prompts_path and settings.summary_prompts_path.exists()),
                 "path": str(settings.summary_prompts_path) if settings.summary_prompts_path else None,
             },
+            "providers": {
+                "exists": bool(settings.summary_providers_path and settings.summary_providers_path.exists()),
+                "path": str(settings.summary_providers_path) if settings.summary_providers_path else None,
+            },
         },
     }
     ok = all(
@@ -329,6 +352,11 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
 def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
     ensure_opencv_dependency(raise_on_failure=False)
     try:
+        if args.execution_mode == "cloud":
+            result = run_cloud_quickread(args, settings)
+            payload = _quickread_payload(args, result, None, True)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
         options = build_runtime_options(
             settings,
             {
@@ -353,6 +381,7 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
                 "summary_system_prompt": args.summary_system_prompt,
                 "summary_user_prompt": args.summary_user_prompt,
                 "summary_prompts_path": args.summary_prompts_file,
+                "summary_providers_path": args.summary_providers_file,
                 "vision_api_config_id": args.vision_api_config_id,
                 "vision_timeout": args.vision_timeout,
                 "vision_sample_ms": args.vision_sample_ms,
@@ -375,6 +404,21 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
             user_prompt="当前 Bilibili SESSDATA 可能已过期。请提供新的 SESSDATA；如果不提供，可清空后继续后续媒体、转录和 OCR 流程。",
             can_continue_without_sessdata=True,
             next_action_hint="重试 quickread 时传入 -Sessdata/--sessdata 新值；若用户不提供，则改用 -NoSessdata/--no-sessdata 显式忽略环境中的 BILI_SESSDATA。",
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 1
+    except CloudQuickreadError as exc:
+        remote = exc.payload
+        payload = _quickread_payload(
+            args,
+            remote.get("result"),
+            remote.get("error") or str(exc),
+            False,
+            error_code=remote.get("error_code"),
+            requires_user_input=bool(remote.get("requires_user_input", False)),
+            user_prompt=remote.get("user_prompt"),
+            can_continue_without_sessdata=bool(remote.get("can_continue_without_sessdata", False)),
+            next_action_hint=remote.get("next_action_hint"),
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
@@ -405,6 +449,10 @@ def _quickread_payload(
         "data_dir": args.data_dir,
         "platform": args.platform,
         "model": args.model,
+        "execution_mode": getattr(args, "execution_mode", "local"),
+        "artifact_target": getattr(args, "artifact_target", "local_only"),
+        "cloud_profile": getattr(args, "cloud_profile", None),
+        "cloud_base_url": getattr(args, "cloud_base_url", None),
         "sessdata_supplied": bool(getattr(args, "sessdata", None)),
         "no_sessdata": bool(getattr(args, "no_sessdata", False)),
         "no_keep_files": bool(args.no_keep_files),

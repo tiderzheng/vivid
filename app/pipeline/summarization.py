@@ -5,7 +5,7 @@ from typing import Any, Callable
 from ..adapters.llm import LlmAdapter
 from ..models.runtime import RuntimeOptions
 from ..models.summary import SummaryResult
-from ..subsystems.summary import build_summary_prompt_config
+from ..subsystems.summary import build_summary_prompt_config, build_summary_provider_configs
 
 QuickreadEventCallback = Callable[[str, str, dict[str, Any] | None], None]
 
@@ -15,13 +15,9 @@ def summarize_transcript(
     event_callback: QuickreadEventCallback | None = None,
 ) -> SummaryResult:
     summary_prompt = build_summary_prompt_config(options)
+    summary_providers = build_summary_provider_configs(options)
     adapter = LlmAdapter(
-        siliconflow_api_key=options.siliconflow_api_key,
-        dashscope_api_key=options.dashscope_api_key,
-        siliconflow_base_url=options.siliconflow_base_url,
-        dashscope_base_url=options.dashscope_base_url,
-        siliconflow_model=options.siliconflow_model,
-        dashscope_model=options.dashscope_model,
+        providers=summary_providers,
         llm_max_chars=options.llm_max_chars,
         summary_system_prompt=summary_prompt.system_prompt,
         summary_user_prompt=summary_prompt.user_prompt_template,

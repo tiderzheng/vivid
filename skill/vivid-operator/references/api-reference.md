@@ -16,8 +16,30 @@ wrapper 的仓库定位优先级：
 
 1. `-VividRoot` / `--vivid-root=...`
 2. `VIVID_REPO_ROOT`
-3. `skill/vivid-operator/state/repo_root.json`
+3. `skill/vivid-operator/state/skill_state.json`
 4. skill 目录内自动检测
+
+wrapper 的默认值定位优先级：
+
+1. `-Model` / `-DataDir`
+2. `VIVID_DEFAULT_MODEL` / `VIVID_DATA_DIR`
+3. `skill/vivid-operator/state/skill_state.json`
+4. Vivid 主程序默认值
+
+wrapper 的执行模式优先级：
+
+1. `-ExecutionMode` / `-ArtifactTarget` / `-CloudProfile` / `-CloudBaseUrl`
+2. `VIVID_EXECUTION_MODE` / `VIVID_ARTIFACT_TARGET` / `VIVID_CLOUD_PROFILE` / `VIVID_CLOUD_BASE_URL`
+3. `skill/vivid-operator/state/skill_state.json`
+4. 默认 `local`
+
+`cloud_profile` 说明：
+
+- `cloud_profile` 是可选的命名配置
+- 如果没有显式 `cloud_base_url`，程序会尝试读取 `VIVID_CLOUD_PROFILE_<PROFILE>_BASE_URL`
+- 如果没有 profile 映射，就直接使用 `cloud_base_url`
+- 当前仓库里的 `cloud` 模式默认直连远端 Vivid Web API
+- 如果外部运行环境需要 MCP，MCP 应该作为仓库外桥接层转发到这个 Web API
 
 ## `paths`
 
@@ -59,6 +81,10 @@ wrapper 的仓库定位优先级：
 - `-DataDir`
 - `-Platform`
 - `-Model`
+- `-ExecutionMode`
+- `-ArtifactTarget`
+- `-CloudProfile`
+- `-CloudBaseUrl`
 - `-AcquisitionMode`
 - `-PreferOcr`
 - `-ForceOcr`
@@ -91,6 +117,12 @@ Bilibili 专用参数：
 - `-NoSessdata` 用于显式忽略环境中的 `BILI_SESSDATA`
 - 如果两者都不传，才会回退到环境变量 `BILI_SESSDATA`
 - 不要同时传 `-Sessdata` 和 `-NoSessdata`
+
+skill 状态文件说明：
+
+- `skill_state.json` 只持久化稳定默认值
+- 当前字段：`repo_root`、`default_whisper_model`、`default_data_dir`、`execution_mode`、`artifact_target`、`cloud_profile`、`cloud_base_url`
+- agent 只在这些字段缺值时才应该向用户询问
 
 ## `web-ui`
 

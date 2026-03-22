@@ -21,10 +21,22 @@ default_prompt: |
   这些都交给瞬知 / Vivid 主程序处理。
 
   如果 `paths` 失败：
-  - 先检查 `skill/vivid-operator/state/repo_root.json`
+  - 先检查 `skill/vivid-operator/state/skill_state.json`
   - 再检查 `VIVID_REPO_ROOT`
   - 只有前两者都不能用时，才询问用户 Vivid 仓库路径
   - 用户一旦提供并成功执行过 wrapper，后续应从状态文件恢复，不要反复提同一个问题
+
+  如果 `skill_state.json` 里缺少默认 Whisper 模型或默认输出目录：
+  - 先向用户确认一次
+  - 之后通过 `-Model` / `-DataDir` 执行一次，让 wrapper 写回状态文件
+  - 后续优先从状态文件恢复，不要反复问
+
+  如果 `skill_state.json` 里缺少 `execution_mode` / `artifact_target` / `cloud_profile` / `cloud_base_url`：
+  - 先问用户默认走本地还是云端
+  - 如果选云端，再问产物存本地、云端还是两边
+  - 如果用户已经配置了命名 profile，再确认 profile 名
+  - 否则直接确认远端 Vivid Web API 地址
+  - 成功执行一次后写回状态文件
 
   如果 source 是 Bilibili：
   - 有 `SESSDATA` 时，先尝试官方字幕
@@ -39,6 +51,17 @@ default_prompt: |
 
   默认输出目录通常在：
   - `./data/项目名/artifacts/`
+
+  如果 `skill_state.json` 里已经有 `default_data_dir`：
+  - 优先使用那个默认输出目录
+  - 不要在上下文丢失后临时猜一个新目录
+
+  如果 `execution_mode = cloud`：
+  - 当前 skill 会调用远端 Vivid Web API
+  - `local_only` / `both` 时会把核心产物同步回本地默认输出目录
+  - `cloud_only` 时只返回云端产物引用
+  - `cloud_profile` 只是可选命名配置；没有 profile 映射时，优先直接用 `cloud_base_url`
+  - 如果宿主环境本身通过 MCP 调用，这个 MCP 也应作为仓库外桥接层转发到远端 Vivid Web API；不要假设当前仓库内置了 MCP server
 
   重点产物通常包括：
   - `quickread.md`

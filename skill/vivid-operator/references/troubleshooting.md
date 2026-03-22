@@ -4,13 +4,51 @@
 
 按下面顺序检查：
 
-1. `skill/vivid-operator/state/repo_root.json`
+1. `skill/vivid-operator/state/skill_state.json`
 2. `VIVID_REPO_ROOT`
 3. `-VividRoot` / `--vivid-root=...`
 
 如果用户刚刚提供过仓库路径，但 agent 又忘了，优先回到状态文件里找，不要重复索要。
 
-注意：状态文件只应该存仓库路径，不能存 `SESSDATA`、API Key 之类的敏感信息。
+注意：状态文件里只能存这些稳定项：
+
+- `repo_root`
+- `default_whisper_model`
+- `default_data_dir`
+- `execution_mode`
+- `artifact_target`
+- `cloud_profile`
+- `cloud_base_url`
+
+不能存 `SESSDATA`、API Key 之类的敏感信息。
+
+## Agent 又忘了默认模型或默认输出目录
+
+按下面顺序处理：
+
+1. 先看 `skill/vivid-operator/state/skill_state.json`
+2. 再看 `VIVID_DEFAULT_MODEL` / `VIVID_DATA_DIR`
+3. 只有前两者都没有时，才重新问用户
+
+如果用户重新指定了值，下一次成功执行 wrapper 后应把它们写回 `skill_state.json`。
+
+## agent 忘了本地模式还是云端模式
+
+按下面顺序处理：
+
+1. 先看 `skill/vivid-operator/state/skill_state.json`
+2. 再看 `VIVID_EXECUTION_MODE` / `VIVID_ARTIFACT_TARGET`
+3. 如果是云端，再看 `VIVID_CLOUD_BASE_URL`
+4. 如果用户走的是 profile 模式，再看 `VIVID_CLOUD_PROFILE_<PROFILE>_BASE_URL`
+4. 只有这些都没有时，才重新问用户
+
+如果用户已经明确选过云端，就不要擅自回退到本地，除非云端配置失效并再次得到用户确认。
+
+补充边界：
+
+- 当前仓库里的云端模式默认直连远端 Vivid Web API
+- 如果某个宿主平台通过 MCP 来调用，也应由 MCP 在仓库外转发到这个 Web API
+- 不要把“当前没有内建 MCP server”误判成“cloud 模式不可用”
 
 ## `python` 不存在
 

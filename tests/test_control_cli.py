@@ -4,6 +4,7 @@ from pathlib import Path
 from app.config import Settings
 from app.control_cli import _run_quickread, build_doctor_payload, build_parser, build_paths_payload
 from app.exceptions import BilibiliSessdataExpiredError
+from app.services.cloud_bridge import CloudQuickreadError
 
 
 def _build_settings(tmp_path: Path) -> Settings:
@@ -14,7 +15,9 @@ def _build_settings(tmp_path: Path) -> Settings:
     vision_api_configs = tmp_path / "configs" / "vision" / "api_configs.json"
     vision_prompts = tmp_path / "configs" / "vision" / "prompts.json"
     transcription_presets = tmp_path / "configs" / "transcription" / "presets.json"
-    for path in [vision_api_configs, vision_prompts, transcription_presets]:
+    summary_prompts = tmp_path / "configs" / "summary" / "prompts.json"
+    summary_providers = tmp_path / "configs" / "summary" / "providers.json"
+    for path in [vision_api_configs, vision_prompts, transcription_presets, summary_prompts, summary_providers]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{}", encoding="utf-8")
     return Settings(
@@ -62,6 +65,8 @@ def _build_settings(tmp_path: Path) -> Settings:
         vision_api_configs_path=vision_api_configs,
         vision_prompts_path=vision_prompts,
         transcription_presets_path=transcription_presets,
+        summary_prompts_path=summary_prompts,
+        summary_providers_path=summary_providers,
     )
 
 
@@ -70,9 +75,13 @@ def test_build_paths_payload_includes_shell_scripts(tmp_path):
     payload = build_paths_payload(settings)
     assert payload["scripts"]["vivid_tool_sh"].endswith("vivid_tool.sh")
     assert payload["skill"]["wrapper_sh"].endswith("vivid_operator.sh")
-    assert payload["skill"]["repo_root_state"].endswith("skill\\vivid-operator\\state\\repo_root.json")
+    assert payload["skill"]["skill_state"].endswith("skill\\vivid-operator\\state\\skill_state.json")
+    assert payload["skill"]["repo_root_state"].endswith("skill\\vivid-operator\\state\\skill_state.json")
+    assert payload["skill"]["execution_modes"] == ["local", "cloud"]
+    assert payload["skill"]["artifact_targets"] == ["local_only", "cloud_only", "both"]
     assert payload["tools"]["helper_paths"]["bili"].endswith("bili.py")
     assert payload["tools"]["helper_paths"]["douyin"].endswith("douyin.js")
+    assert payload["configs"]["summary"]["providers"].endswith("configs\\summary\\providers.json")
 
 
 def test_build_doctor_payload_reports_torch_and_helpers(tmp_path, monkeypatch):
@@ -227,3 +236,84 @@ def test_run_quickread_payload_includes_no_sessdata_flag(tmp_path, monkeypatch, 
 
     assert exit_code == 0
     assert payload["no_sessdata"] is True
+
+
+def test_run_quickread_cloud_mode_uses_cloud_executor(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://example.com/video",
+            "--execution-mode",
+            "cloud",
+            "--artifact-target",
+            "both",
+            "--cloud-profile",
+            "prod",
+            "--cloud-base-url",
+            "https://cloud.example",
+        ]
+    )
+
+    monkeypatch.setattr(
+        "app.control_cli.run_cloud_quickread",
+        lambda args, settings: {
+            "ok": True,
+            "source": args.source,
+            "execution_mode": args.execution_mode,
+            "artifact_target": args.artifact_target,
+            "cloud_profile": args.cloud_profile,
+            "cloud_base_url": args.cloud_base_url,
+        },
+    )
+
+    exit_code = _run_quickread(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["ok"] is True
+    assert payload["execution_mode"] == "cloud"
+    assert payload["artifact_target"] == "both"
+    assert payload["cloud_profile"] == "prod"
+    assert payload["cloud_base_url"] == "https://cloud.example"
+
+
+def test_run_quickread_cloud_mode_preserves_structured_remote_error(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://www.bilibili.com/video/BV1xx",
+            "--execution-mode",
+            "cloud",
+            "--cloud-base-url",
+            "https://cloud.example",
+        ]
+    )
+
+    monkeypatch.setattr(
+        "app.control_cli.run_cloud_quickread",
+        lambda args, settings: (_ for _ in ()).throw(
+            CloudQuickreadError(
+                {
+                    "ok": False,
+                    "error": "api error -101: 账号未登录",
+                    "error_code": "bili_sessdata_expired",
+                    "requires_user_input": True,
+                    "user_prompt": "请提供新的 SESSDATA",
+                    "can_continue_without_sessdata": True,
+                }
+            )
+        ),
+    )
+
+    exit_code = _run_quickread(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["execution_mode"] == "cloud"
+    assert payload["error_code"] == "bili_sessdata_expired"
+    assert payload["requires_user_input"] is True
+    assert payload["can_continue_without_sessdata"] is True

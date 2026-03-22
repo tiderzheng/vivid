@@ -8,6 +8,12 @@ param(
     [string]$DataDir,
     [string]$Platform,
     [string]$Model,
+    [ValidateSet("local", "cloud")]
+    [string]$ExecutionMode = "local",
+    [ValidateSet("local_only", "cloud_only", "both")]
+    [string]$ArtifactTarget = "local_only",
+    [string]$CloudProfile,
+    [string]$CloudBaseUrl,
     [string]$Sessdata,
     [switch]$NoSessdata,
     [string]$FfmpegBin,
@@ -95,6 +101,10 @@ switch ($Action) {
         if ($DataDir) { $cliArgs += @("--data-dir", $DataDir) }
         if ($Platform) { $cliArgs += @("--platform", $Platform) }
         if ($Model) { $cliArgs += @("--model", $Model) }
+        if ($ExecutionMode) { $cliArgs += @("--execution-mode", $ExecutionMode) }
+        if ($ArtifactTarget) { $cliArgs += @("--artifact-target", $ArtifactTarget) }
+        if ($CloudProfile) { $cliArgs += @("--cloud-profile", $CloudProfile) }
+        if ($CloudBaseUrl) { $cliArgs += @("--cloud-base-url", $CloudBaseUrl) }
         if ($Sessdata) { $cliArgs += @("--sessdata", $Sessdata) }
         if ($NoSessdata) { $cliArgs += "--no-sessdata" }
         if ($FfmpegBin) { $cliArgs += @("--ffmpeg-bin", $FfmpegBin) }

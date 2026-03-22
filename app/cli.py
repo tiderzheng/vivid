@@ -63,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-system-prompt", help="Override summary system prompt")
     parser.add_argument("--summary-user-prompt", help="Override summary user prompt template; use {transcript} as placeholder")
     parser.add_argument("--summary-prompts-file", help="Override Vivid summary prompts file")
+    parser.add_argument("--summary-providers-file", help="Override Vivid summary provider config file")
     parser.add_argument("--vision-api-config-id", help="Override Eyes-side OCR config id")
     parser.add_argument(
         "--vision-backend",
@@ -138,6 +139,7 @@ def main() -> int:
             "summary_system_prompt": args.summary_system_prompt,
             "summary_user_prompt": args.summary_user_prompt,
             "summary_prompts_path": args.summary_prompts_file,
+            "summary_providers_path": args.summary_providers_file,
             "vision_api_config_id": args.vision_api_config_id,
             "vision_backend": args.vision_backend,
             "vision_api_base": args.vision_api_base,

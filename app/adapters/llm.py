@@ -4,6 +4,7 @@ import requests
 
 from ..exceptions import VividError
 from ..models.summary import SummaryResult
+from ..subsystems.summary.models import SummaryProviderConfig
 from ..utils.json_utils import extract_json_block
 from ..utils.logging_utils import log_event, log_exception
 from ..utils.text import sentence_split, trim_for_llm
@@ -13,22 +14,12 @@ class LlmAdapter:
     def __init__(
         self,
         *,
-        siliconflow_api_key: str | None,
-        dashscope_api_key: str | None,
-        siliconflow_base_url: str,
-        dashscope_base_url: str,
-        siliconflow_model: str,
-        dashscope_model: str,
+        providers: list[SummaryProviderConfig],
         llm_max_chars: int,
         summary_system_prompt: str,
         summary_user_prompt: str,
     ) -> None:
-        self.siliconflow_api_key = siliconflow_api_key
-        self.dashscope_api_key = dashscope_api_key
-        self.siliconflow_base_url = siliconflow_base_url
-        self.dashscope_base_url = dashscope_base_url
-        self.siliconflow_model = siliconflow_model
-        self.dashscope_model = dashscope_model
+        self.providers = providers
         self.llm_max_chars = llm_max_chars
         self.summary_system_prompt = summary_system_prompt
         self.summary_user_prompt = summary_user_prompt
@@ -36,41 +27,24 @@ class LlmAdapter:
     def summarize(self, transcript: str) -> SummaryResult:
         clipped = trim_for_llm(transcript, self.llm_max_chars)
         failures: list[str] = []
-        if self.siliconflow_api_key:
+        for provider in self.providers:
             try:
                 return self._request_summary(
-                    api_key=self.siliconflow_api_key,
-                    base_url=self.siliconflow_base_url,
-                    model=self.siliconflow_model,
+                    api_key=provider.api_key,
+                    base_url=provider.base_url,
+                    model=provider.model,
                     transcript=clipped,
-                    provider_label=f"SiliconFlow {self.siliconflow_model}",
+                    provider_label=f"{provider.provider_name} {provider.model}",
+                    provider_id=provider.provider_id,
                 )
             except Exception as exc:
-                failures.append(f"SiliconFlow {self.siliconflow_model}: {exc}")
+                failures.append(f"{provider.provider_name} {provider.model}: {exc}")
                 log_exception(
                     "summary_provider_failed",
                     exc,
-                    provider="siliconflow",
-                    model=self.siliconflow_model,
-                    base_url=self.siliconflow_base_url,
-                )
-        if self.dashscope_api_key:
-            try:
-                return self._request_summary(
-                    api_key=self.dashscope_api_key,
-                    base_url=self.dashscope_base_url,
-                    model=self.dashscope_model,
-                    transcript=clipped,
-                    provider_label=f"DashScope {self.dashscope_model}",
-                )
-            except Exception as exc:
-                failures.append(f"DashScope {self.dashscope_model}: {exc}")
-                log_exception(
-                    "summary_provider_failed",
-                    exc,
-                    provider="dashscope",
-                    model=self.dashscope_model,
-                    base_url=self.dashscope_base_url,
+                    provider=provider.provider_id,
+                    model=provider.model,
+                    base_url=provider.base_url,
                 )
         if failures:
             log_event("summary_fallback_used", failures=failures, fallback="rule_based")
@@ -84,6 +58,7 @@ class LlmAdapter:
         model: str,
         transcript: str,
         provider_label: str,
+        provider_id: str,
     ) -> SummaryResult:
         system_prompt = self.summary_system_prompt
         user_prompt = self._render_summary_user_prompt(transcript)
@@ -124,7 +99,12 @@ class LlmAdapter:
             raise VividError(f"{provider_label} returned no action suggestions.")
         if not playful_comment:
             raise VividError(f"{provider_label} returned no playful comment.")
-        log_event("summary_provider_succeeded", provider=provider_label, key_points=len(core_points))
+        log_event(
+            "summary_provider_succeeded",
+            provider=provider_label,
+            provider_id=provider_id,
+            key_points=len(core_points),
+        )
         return SummaryResult(
             title=title,
             overview=overview,

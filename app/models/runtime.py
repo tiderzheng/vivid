@@ -58,3 +58,4 @@ class RuntimeOptions:
     summary_system_prompt: str | None = None
     summary_user_prompt: str | None = None
     summary_prompts_path: Path | None = None
+    summary_providers_path: Path | None = None
