@@ -8,7 +8,7 @@ from ..adapters.douyin import DouyinAdapter
 from ..adapters.ears4 import Ears4Adapter
 from ..adapters.eyes import EyesAdapter
 from ..adapters.ytdlp import YtDlpAdapter
-from ..exceptions import BilibiliSessdataExpiredError, VividError
+from ..exceptions import VividError
 from ..models.runtime import RuntimeOptions
 from ..models.transcript import TranscriptResult
 from ..subsystems import InternalTranscriptionEngine, build_transcription_request_config, detect_hard_subtitles
@@ -38,7 +38,6 @@ def create_media_path(
         return BilibiliAdapter(options.bili_script).download_media(
             source,
             workdir,
-            options.sessdata,
             options.ffmpeg_bin,
         )
     if platform == "douyin":
@@ -56,83 +55,14 @@ def acquire_transcript(
     *,
     checkpoint_callback: CheckpointCallback | None = None,
     resume_media_path: Path | None = None,
-    pause_on_bili_sessdata_expired: bool = False,
 ) -> TranscriptResult:
-    if (
-        platform == "bilibili"
-        and options.acquisition_mode in {"auto", "smart"}
-        and resume_media_path is None
-    ):
-        try:
-            _emit_event(event_callback, "subtitle", "尝试直接提取 Bilibili 字幕")
-            subtitle_text = BilibiliAdapter(options.bili_script).export_subtitles(
-                options.source,
-                workdir,
-                options.sessdata,
-            )
-            if subtitle_text:
-                _emit_event(event_callback, "subtitle_completed", "已直接获取 Bilibili 字幕")
-                result = TranscriptResult(text=subtitle_text, acquisition_method="Bilibili subtitle")
-                _emit_checkpoint(
-                    checkpoint_callback,
-                    {
-                        "last_completed_stage": "transcription",
-                        "transcript": _transcript_payload(result),
-                    },
-                )
-                return result
-        except BilibiliSessdataExpiredError as exc:
-            _handle_bili_sessdata_expired(
-                options,
-                event_callback,
-                exc,
-                pause_on_bili_sessdata_expired=pause_on_bili_sessdata_expired,
-            )
-            _emit_event(
-                event_callback,
-                "subtitle_failed",
-                "SESSDATA 已失效，已忽略该值并继续媒体流程",
-                {
-                    "error": str(exc),
-                    "error_code": "bili_sessdata_expired",
-                    "continued_without_sessdata": True,
-                },
-            )
-        except Exception as exc:
-            _emit_event(
-                event_callback,
-                "subtitle_failed",
-                "Bilibili 字幕提取失败，改走媒体流程",
-                {"error": str(exc)},
-            )
-            log_exception("bilibili_subtitle_failed", exc, source=options.source)
-
     if resume_media_path is not None:
         media_path = resume_media_path.expanduser()
         if not media_path.exists():
             raise VividError(f"checkpoint media does not exist: {media_path}")
         _emit_event(event_callback, "media_ready", "已加载断点媒体", {"path": str(media_path)})
     else:
-        try:
-            media_path = create_media_path(options.source, platform, workdir, options, event_callback)
-        except BilibiliSessdataExpiredError as exc:
-            _handle_bili_sessdata_expired(
-                options,
-                event_callback,
-                exc,
-                pause_on_bili_sessdata_expired=pause_on_bili_sessdata_expired,
-            )
-            _emit_event(
-                event_callback,
-                "download_retry",
-                "SESSDATA 已失效，已忽略该值并重试媒体流程",
-                {
-                    "error": str(exc),
-                    "error_code": "bili_sessdata_expired",
-                    "continued_without_sessdata": True,
-                },
-            )
-            media_path = create_media_path(options.source, platform, workdir, options, event_callback)
+        media_path = create_media_path(options.source, platform, workdir, options, event_callback)
     _emit_event(event_callback, "media_ready", "媒体准备完成", {"path": str(media_path)})
     _emit_checkpoint(
         checkpoint_callback,
@@ -410,29 +340,6 @@ def _emit_checkpoint(callback: CheckpointCallback | None, payload: dict[str, Any
     if callback is None:
         return
     callback(payload)
-
-
-def _handle_bili_sessdata_expired(
-    options: RuntimeOptions,
-    event_callback: QuickreadEventCallback | None,
-    exc: BilibiliSessdataExpiredError,
-    *,
-    pause_on_bili_sessdata_expired: bool,
-) -> None:
-    _emit_event(
-        event_callback,
-        "sessdata_refresh_required",
-        "Bilibili SESSDATA 已失效，请先更新；若不更新，可清空后继续后续流程",
-        {
-            "error": str(exc),
-            "error_code": "bili_sessdata_expired",
-            "can_continue_without_sessdata": True,
-        },
-    )
-    log_exception("bilibili_sessdata_expired", exc, source=options.source)
-    if pause_on_bili_sessdata_expired:
-        raise exc
-    options.sessdata = None
 
 
 def _transcript_payload(transcript: TranscriptResult) -> dict[str, Any]:

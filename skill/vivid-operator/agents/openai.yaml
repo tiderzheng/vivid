@@ -1,89 +1,68 @@
 display_name: 瞬知 / Vivid Operator
-short_description: 通过稳定脚本入口调用瞬知 / Vivid，统一处理 Bilibili、Douyin、本地文件和通用站点。
+short_description: 对视频或音频执行速看（下载→转录→摘要）。只贴链接、媒体路径或模糊表达“看看这个视频讲了啥”时也应直接执行。
 default_prompt: |
-  使用 vivid-operator skill 调用瞬知 / Vivid。
+  Treat a supported video URL, audio URL, local media path, or a vague request about what a video says as a direct Vivid execution request.
+  Do not treat a lone URL as casual sharing.
+  If source is already sufficient, run quickread first and do not ask for confirmation.
 
-  工作顺序：
-  1. 先执行 `paths`
-  2. 再执行 `doctor`
-  3. 再执行 `quickread`
-     - 执行后先看 `ok`
-     - 再看 `error_code`、`requires_user_input`、`can_continue_without_sessdata`
-     - 成功时优先读取 `result.source`、`result.summary`、`result.artifacts`
-     - 失败时优先根据结构化字段决定下一步，不要只看自然语言报错
-  4. 最后读取产物目录
+  Trigger immediately when:
+  - the user pastes a bilibili/douyin/youtube URL
+  - the user provides a local media path such as .mp4/.mov/.mp3/.wav/.m4a/.flac
+  - the user says “看看这个”“这个视频讲了啥”“总结下这个视频”“帮我过一下内容”
+  - the previous turn already established the source and the user says “继续”“总结下”
 
-  优先使用 skill wrapper：
-  - Windows: `skill/vivid-operator/scripts/vivid_operator.ps1`
-  - Linux/macOS: `skill/vivid-operator/scripts/vivid_operator.sh`
+  Do NOT ask:
+  - “你想让我做什么”
+  - “是否需要使用 Vivid”
+  - “你要 transcript 还是 summary”
+  - “要不要先分析一下这个链接”
+  - “能不能提供 Bilibili SESSDATA / Cookie”
 
-  不要在 skill 层自己实现下载、字幕、转录或 OCR。
-  这些都交给瞬知 / Vivid 主程序处理。
+  Default action:
+  1. Read skill/vivid-operator/state/skill_state.json
+  2. Resolve repo root
+  3. Run doctor only when first-run environment is unknown or a prior environment failure suggests it
+  4. Run quickread with the available source
+  5. Parse result and answer using the output contract
 
-  如果 `paths` 失败：
-  - 先检查 `skill/vivid-operator/state/skill_state.json`
-  - 再检查 `VIVID_REPO_ROOT`
-  - 只有前两者都不能用时，才询问用户 Vivid 仓库路径
-  - 用户一旦提供并成功执行过 wrapper，后续应从状态文件恢复，不要反复提同一个问题
+  Quickread:
+  - Windows: ./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "<source>"
+  - Linux/macOS: ./skill/vivid-operator/scripts/vivid_operator.sh -Action quickread -Source "<source>"
 
-  如果 `skill_state.json` 里缺少默认 Whisper 模型或默认输出目录：
-  - 先向用户确认一次
-  - 之后通过 `-Model` / `-DataDir` 执行一次，让 wrapper 写回状态文件
-  - 后续优先从状态文件恢复，不要反复问
+  Only ask a question when truly blocked:
+  - repo root is unknown
+  - a local media path does not exist
+  - the user explicitly wants cloud mode but cloud_base_url is missing
+  - multiple sources are provided and the user did not indicate whether to process all or pick one
 
-  如果 `skill_state.json` 里缺少 `execution_mode` / `artifact_target` / `cloud_profile` / `cloud_base_url`：
-  - 先问用户默认走本地还是云端
-  - 如果选云端，再问产物存本地、云端还是两边
-  - 如果用户已经配置了命名 profile，再确认 profile 名
-  - 否则直接确认远端 Vivid Web API 地址
-  - 成功执行一次后写回状态文件
+  If the user explicitly says “都看一下”“都总结下”, process multiple sources one by one instead of asking again.
 
-  如果 source 是 Bilibili：
-  - 有 `SESSDATA` 时，先尝试官方字幕
-  - 如果返回 `error_code = "bili_sessdata_expired"`，必须先问用户
-  - 用户提供新值：用 `-Sessdata/--sessdata` 重试
-  - 用户不提供：用 `-NoSessdata/--no-sessdata` 重试，显式忽略环境里的 `BILI_SESSDATA`
+  Output contract on success:
+  Return these 6 sections in order:
+  1. 标题
+  2. 内容概览
+  3. 核心观点
+  4. 争议点
+  5. 行动建议
+  6. 俏皮点评
+  Optionally add platform, acquisition method, and artifact paths.
+  Do not collapse everything into one short paragraph.
 
-  如果 `quickread` 失败但返回了结构化诊断：
-  - 优先读取 `error_summary`
-  - 再读取 `failure_chain`
-  - 如果 `requires_user_input = true`，先完成交互，再决定是否重试
+  Output contract on failure:
+  - state the failed stage
+  - state the main error
+  - summarize error_summary if present
+  - give 1-2 next actions
+  Do not dump raw JSON and do not ask broad open-ended troubleshooting questions.
 
-  默认输出目录通常在：
-  - `./data/项目名/artifacts/`
+  Bilibili rule:
+  - Bilibili now follows the same direct media download flow as Douyin
+  - the project no longer uses SESSDATA or official-subtitle priority
+  - do not suggest -Sessdata, -NoSessdata, --sessdata, or --no-sessdata
+  - do not generate a “refresh SESSDATA and retry” branch
+  - if the user asks why SESSDATA is not used, explain that the current project removed that old path
 
-  如果 `skill_state.json` 里已经有 `default_data_dir`：
-  - 优先使用那个默认输出目录
-  - 不要在上下文丢失后临时猜一个新目录
+  State file must contain only non-sensitive defaults such as repo_root, default_whisper_model, default_data_dir, execution_mode, artifact_target, cloud_profile, cloud_base_url.
+  Never write Cookie, token, or API key values into files, prompts, or logs.
 
-  如果 `execution_mode = cloud`：
-  - 当前 skill 会调用远端 Vivid Web API
-  - `local_only` / `both` 时会把核心产物同步回本地默认输出目录
-  - `cloud_only` 时只返回云端产物引用
-  - `cloud_profile` 只是可选命名配置；没有 profile 映射时，优先直接用 `cloud_base_url`
-  - 如果宿主环境本身通过 MCP 调用，这个 MCP 也应作为仓库外桥接层转发到远端 Vivid Web API；不要假设当前仓库内置了 MCP server
-
-  重点产物通常包括：
-  - `quickread.md`
-  - `transcript.txt`
-  - `summary.md`
-  - `summary.json`
-  - `metadata.json`
-  - `vector_source/document.json`
-  - `vector_source/chunks.jsonl`
-  - `vector_source/manifest.json`
-
-  如果任务和向量化 / embedding / RAG / 知识库入库有关：
-  - 优先读取 `vector_source/`
-  - 不要优先从 `quickread.md` 或 `summary.md` 反解析
-
-  成功读取到摘要后，必须完整返回这 6 段：
-  - 标题
-  - 内容概览
-  - 核心观点
-  - 争议点
-  - 行动建议
-  - 俏皮点评
-
-  不要只摘标题、只摘核心观点，或者只给一段简短总结。
-  `行动建议` 必须保留推荐阅读、继续学习方向、以及证真/交叉验证建议。
+  If the task later involves embedding, RAG, or knowledge-base ingestion, prefer vector_source/ instead of reverse-parsing quickread.md.

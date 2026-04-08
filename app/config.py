@@ -43,7 +43,6 @@ class Settings:
     dashscope_model: str
     siliconflow_api_key: str | None
     dashscope_api_key: str | None
-    bili_sessdata: str | None
     bili_script: Path | None
     douyin_script: Path | None
     vision_api_config_id: str | None
@@ -111,7 +110,6 @@ def load_settings() -> Settings:
         dashscope_model=os.environ.get("VIVID_DASHSCOPE_MODEL", "qwen-plus"),
         siliconflow_api_key=os.environ.get("SILICONFLOW_API_KEY") or None,
         dashscope_api_key=os.environ.get("DASHSCOPE_API_KEY") or None,
-        bili_sessdata=os.environ.get("BILI_SESSDATA") or None,
         bili_script=Path(
             os.environ.get(
                 "VIVID_BILI_SCRIPT",

@@ -18,6 +18,7 @@ def run_command(
     command: list[str],
     cwd: Path | None = None,
     retries: int = 1,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     last_error: subprocess.CalledProcessError | None = None
     for attempt in range(1, retries + 1):
@@ -25,7 +26,7 @@ def run_command(
             return subprocess.run(
                 command,
                 cwd=str(cwd) if cwd else None,
-                env=command_env(),
+                env=env or command_env(),
                 check=True,
                 text=True,
                 capture_output=True,

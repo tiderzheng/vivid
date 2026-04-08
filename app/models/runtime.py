@@ -12,7 +12,6 @@ class RuntimeOptions:
     output_format: str
     whisper_model: str
     forced_platform: str | None
-    sessdata: str | None
     ffmpeg_bin: str
     whisper_root: Path | None
     ears4_api: str

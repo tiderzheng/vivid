@@ -3,7 +3,6 @@ from pathlib import Path
 
 from app.config import Settings
 from app.control_cli import _run_quickread, build_doctor_payload, build_parser, build_paths_payload
-from app.exceptions import BilibiliSessdataExpiredError
 from app.services.cloud_bridge import CloudQuickreadError
 
 
@@ -47,7 +46,6 @@ def _build_settings(tmp_path: Path) -> Settings:
         dashscope_model="model-b",
         siliconflow_api_key=None,
         dashscope_api_key=None,
-        bili_sessdata=None,
         bili_script=bili,
         douyin_script=douyin,
         vision_api_config_id=None,
@@ -184,48 +182,33 @@ def test_build_doctor_payload_treats_torch_as_optional(tmp_path, monkeypatch):
     assert payload["checks"]["torch"]["required"] is False
 
 
-def test_run_quickread_returns_structured_sessdata_refresh_payload(tmp_path, monkeypatch, capsys):
-    settings = _build_settings(tmp_path)
-    args = build_parser().parse_args(
+def test_quickread_parser_accepts_legacy_sessdata_flags():
+    parser = build_parser()
+    args = parser.parse_args(
         [
             "quickread",
             "--source",
             "https://www.bilibili.com/video/BV1xx",
             "--sessdata",
             "expired",
-        ]
-    )
-
-    monkeypatch.setattr("app.control_cli.build_runtime_options", lambda *_args, **_kwargs: object())
-
-    def fake_run_quickread(options, pause_on_bili_sessdata_expired=False):
-        assert pause_on_bili_sessdata_expired is True
-        raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
-
-    monkeypatch.setattr("app.control_cli.run_quickread", fake_run_quickread)
-
-    exit_code = _run_quickread(args, settings)
-    payload = json.loads(capsys.readouterr().out)
-
-    assert exit_code == 1
-    assert payload["error_code"] == "bili_sessdata_expired"
-    assert payload["requires_user_input"] is True
-    assert payload["can_continue_without_sessdata"] is True
-    assert payload["sessdata_supplied"] is True
-
-
-def test_run_quickread_payload_includes_no_sessdata_flag(tmp_path, monkeypatch, capsys):
-    settings = _build_settings(tmp_path)
-    args = build_parser().parse_args(
-        [
-            "quickread",
-            "--source",
-            "https://www.bilibili.com/video/BV1xx",
             "--no-sessdata",
         ]
     )
 
-    monkeypatch.setattr("app.control_cli.build_runtime_options", lambda *_args, **_kwargs: object())
+    assert args.sessdata == "expired"
+    assert args.no_sessdata is True
+
+
+def test_run_quickread_omits_removed_sessdata_fields(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(["quickread", "--source", "https://www.bilibili.com/video/BV1xx"])
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr("app.control_cli.build_runtime_options", fake_build_runtime_options)
     monkeypatch.setattr(
         "app.control_cli.run_quickread",
         lambda *args, **kwargs: type("Result", (), {"to_dict": lambda self: {"error_summary": None}})(),
@@ -235,7 +218,11 @@ def test_run_quickread_payload_includes_no_sessdata_flag(tmp_path, monkeypatch, 
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["no_sessdata"] is True
+    assert "sessdata" not in captured["values"]
+    assert "no_sessdata" not in captured["values"]
+    assert "sessdata_supplied" not in payload
+    assert "no_sessdata" not in payload
+    assert "can_continue_without_sessdata" not in payload
 
 
 def test_run_quickread_cloud_mode_uses_cloud_executor(tmp_path, monkeypatch, capsys):
@@ -299,11 +286,8 @@ def test_run_quickread_cloud_mode_preserves_structured_remote_error(tmp_path, mo
             CloudQuickreadError(
                 {
                     "ok": False,
-                    "error": "api error -101: 账号未登录",
-                    "error_code": "bili_sessdata_expired",
-                    "requires_user_input": True,
-                    "user_prompt": "请提供新的 SESSDATA",
-                    "can_continue_without_sessdata": True,
+                    "error": "remote unavailable",
+                    "error_code": "cloud_unavailable",
                 }
             )
         ),
@@ -314,6 +298,5 @@ def test_run_quickread_cloud_mode_preserves_structured_remote_error(tmp_path, mo
 
     assert exit_code == 1
     assert payload["execution_mode"] == "cloud"
-    assert payload["error_code"] == "bili_sessdata_expired"
-    assert payload["requires_user_input"] is True
-    assert payload["can_continue_without_sessdata"] is True
+    assert payload["error_code"] == "cloud_unavailable"
+    assert "can_continue_without_sessdata" not in payload

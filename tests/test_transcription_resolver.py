@@ -33,7 +33,6 @@ def test_build_transcription_request_config(tmp_path):
         output_format="both",
         whisper_model="small",
         forced_platform=None,
-        sessdata=None,
         ffmpeg_bin="ffmpeg",
         whisper_root=None,
         ears4_api="http://127.0.0.1:7860",

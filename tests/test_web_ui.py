@@ -45,7 +45,6 @@ def _build_settings(tmp_path: Path) -> Settings:
         dashscope_model="model-b",
         siliconflow_api_key=None,
         dashscope_api_key=None,
-        bili_sessdata=None,
         bili_script=tmp_path / "bili.py",
         douyin_script=tmp_path / "douyin.js",
         vision_api_config_id="cfg-1",
@@ -97,6 +96,7 @@ def test_web_index_renders(tmp_path, monkeypatch):
     assert "Whisper 模型" in response.text
     assert "历史任务" in response.text
     assert "批量 URL" in response.text
+    assert "Bilibili SESSDATA" not in response.text
 
 
 def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
@@ -120,7 +120,8 @@ def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
     assert payload["dependencies"]["opencv"]["package"] == "opencv-python"
     assert payload["stats"]["queued"] == 0
     assert payload["defaults"]["data_dir"] == str(settings.data_dir)
-    assert payload["defaults"]["no_sessdata"] is False
+    assert "sessdata" not in payload["defaults"]
+    assert "no_sessdata" not in payload["defaults"]
 
 
 def test_web_default_output_dir_can_be_saved(tmp_path, monkeypatch):
@@ -325,7 +326,7 @@ def test_web_quickread_returns_vector_source_files(tmp_path, monkeypatch):
     assert payload["files"]["vector_manifest_json"].endswith("manifest.json")
 
 
-def test_web_quickread_passes_sessdata_controls(tmp_path, monkeypatch):
+def test_web_quickread_omits_removed_sessdata_controls(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
@@ -340,7 +341,7 @@ def test_web_quickread_passes_sessdata_controls(tmp_path, monkeypatch):
         "app.web.run_quickread",
         lambda _options: OrchestratorResult(
             source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
-            transcript=TranscriptResult(text="逐字稿", acquisition_method="Bilibili subtitle"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
             summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
             artifacts=ArtifactBundle(
                 workdir=settings.data_dir / "demo",
@@ -358,44 +359,35 @@ def test_web_quickread_passes_sessdata_controls(tmp_path, monkeypatch):
     client = TestClient(app)
     response = client.post(
         "/api/quickread",
-        data={
-            "source_url": "https://www.bilibili.com/video/BV1xx",
-            "sessdata": "fresh-cookie",
-            "no_sessdata": "true",
-        },
+        data={"source_url": "https://www.bilibili.com/video/BV1xx"},
     )
 
     assert response.status_code == 200
-    assert captured["values"]["sessdata"] == "fresh-cookie"
-    assert captured["values"]["no_sessdata"] is True
+    assert "sessdata" not in captured["values"]
+    assert "no_sessdata" not in captured["values"]
 
 
-def test_web_quickread_returns_structured_sessdata_refresh_payload(tmp_path, monkeypatch):
+def test_web_quickread_treats_bili_sessdata_errors_as_generic_failures(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
 
-    def fake_run(_options, pause_on_bili_sessdata_expired=False):
-        assert pause_on_bili_sessdata_expired is True
+    def fake_run(_options):
         raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
 
     monkeypatch.setattr("app.web.run_quickread", fake_run)
     client = TestClient(app)
 
-    response = client.post(
-        "/api/quickread",
-        data={"source_url": "https://www.bilibili.com/video/BV1xx", "sessdata": "expired"},
-    )
+    response = client.post("/api/quickread", data={"source_url": "https://www.bilibili.com/video/BV1xx"})
 
-    assert response.status_code == 409
+    assert response.status_code == 500
     payload = response.json()
     assert payload["ok"] is False
-    assert payload["error_code"] == "bili_sessdata_expired"
-    assert payload["requires_user_input"] is True
-    assert payload["can_continue_without_sessdata"] is True
+    assert "api error -101: 账号未登录" in payload["error"]
+    assert "error_code" not in payload
 
 
-def test_web_jobs_request_keeps_no_sessdata_but_not_secret(tmp_path, monkeypatch):
+def test_web_jobs_request_omits_removed_sessdata_controls(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
@@ -404,7 +396,7 @@ def test_web_jobs_request_keeps_no_sessdata_but_not_secret(tmp_path, monkeypatch
         "app.web._invoke_run_quickread",
         lambda *_args, **_kwargs: OrchestratorResult(
             source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
-            transcript=TranscriptResult(text="逐字稿", acquisition_method="Bilibili subtitle"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
             summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
             artifacts=ArtifactBundle(
                 workdir=settings.data_dir / "demo",
@@ -431,11 +423,11 @@ def test_web_jobs_request_keeps_no_sessdata_but_not_secret(tmp_path, monkeypatch
 
     assert response.status_code == 200
     job = response.json()["job"]
-    assert job["request"]["no_sessdata"] is True
     assert "sessdata" not in job["request"]
+    assert "no_sessdata" not in job["request"]
 
 
-def test_web_retry_job_accepts_sessdata_overrides(tmp_path, monkeypatch):
+def test_web_retry_job_ignores_removed_sessdata_overrides(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
@@ -457,7 +449,7 @@ def test_web_retry_job_accepts_sessdata_overrides(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert captured["job_id"] == "job-1"
-    assert captured["overrides"] == {"sessdata": "fresh-cookie", "no_sessdata": False}
+    assert captured["overrides"] == {}
 
 
 def test_web_quickread_requires_source(tmp_path, monkeypatch):
@@ -1171,30 +1163,20 @@ def test_web_job_exposes_failure_chain(tmp_path, monkeypatch):
     assert job["error_summary"]["items"]
 
 
-def test_web_job_exposes_bili_sessdata_refresh_state(tmp_path, monkeypatch):
+def test_web_job_does_not_classify_sessdata_style_errors(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
 
     def fake_run(_options, event_callback=None):
-        if event_callback:
-            event_callback(
-                "sessdata_refresh_required",
-                "Bilibili SESSDATA 已失效，请先更新；若不更新，可清空后继续后续流程",
-                {
-                    "error": "api error -101: 账号未登录",
-                    "error_code": "bili_sessdata_expired",
-                    "can_continue_without_sessdata": True,
-                },
-            )
-        raise BilibiliSessdataExpiredError("api error -101: 账号未登录")
+        raise RuntimeError("sessdata expired while downloading")
 
     monkeypatch.setattr("app.web.run_quickread", fake_run)
     client = TestClient(app)
 
     create_response = client.post(
         "/api/jobs",
-        data={"source_url": "https://www.bilibili.com/video/BV1xx", "platform": "bilibili", "sessdata": "expired"},
+        data={"source_url": "https://www.bilibili.com/video/BV1xx", "platform": "bilibili"},
     )
     assert create_response.status_code == 200
     job_id = create_response.json()["job"]["job_id"]
@@ -1209,7 +1191,7 @@ def test_web_job_exposes_bili_sessdata_refresh_state(tmp_path, monkeypatch):
 
     assert job is not None
     assert job["status"] == "failed"
-    assert job["error_code"] == "bili_sessdata_expired"
-    assert job["requires_user_input"] is True
-    assert job["can_continue_without_sessdata"] is True
-    assert job["user_prompt"]
+    assert job["error_code"] is None
+    assert job["requires_user_input"] is False
+    assert job["can_continue_without_sessdata"] is False
+    assert job["user_prompt"] is None

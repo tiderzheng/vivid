@@ -92,11 +92,7 @@
 - **本地文件**
   - 直接使用本地视频 / 音频
 - **Bilibili**
-  - 优先尝试直接提取字幕
-  - `SESSDATA` 来源优先级是：`--sessdata` > `--no-sessdata` > `BILI_SESSDATA`
-  - 如果配置了 `SESSDATA`，会先用它尝试获取官方字幕
-  - 如果控制面返回 `error_code = "bili_sessdata_expired"`，应先更新 `SESSDATA`；如果用户不提供，再用 `--no-sessdata` 显式忽略旧会话后继续媒体流程
-  - 如果拿不到字幕，再下载媒体
+  - 直接下载媒体
   - 使用内嵌的下载器（位于 `tools/bilibili/`）
 - **Douyin**
   - 使用内嵌的下载器（位于 `tools/douyin/`）下载视频
@@ -380,21 +376,17 @@ Web UI 支持：
 - 选择 `Whisper` 模型
 - 设置采集策略，支持 `smart` 智能推荐
 - 设置转录后端 / OCR 后端
-- 填写 Bilibili `SESSDATA`，或显式忽略环境中的 `BILI_SESSDATA`
-- 同一次任务里，表单显式填写的 `SESSDATA` 优先于环境变量；如果选择忽略 `SESSDATA`，则会显式跳过环境变量
 - 选择或填写 OCR OpenAI 兼容 API 配置
 - 保存默认 OCR API 配置
 - 查看任务进度、日志、历史任务
 - 在历史任务里批量选择并导出多个任务产物 zip
 - 任务失败后根据 checkpoint 从 `transcription` / `summarize` / `render` / `artifacts` 继续
 - Web 历史详情会展示结构化失败链；成功任务的 `metadata.json` 也会保留回退和失败轨迹
-- 如果 Bilibili `SESSDATA` 过期，任务详情会直接提供“使用表单中的新 `SESSDATA` 重试”和“忽略 `SESSDATA` 继续”两个动作
 - 下载产物
 - 一键打开输出目录
 
 `smart` 模式的规则是：
 
-- `Bilibili` 能直接拿到官方字幕时，仍优先官方字幕
 - 视频检测到明显硬字幕时，自动等效 `prefer_ocr`
 - 未检测到明显硬字幕时，优先常规转录
 - 如果前面的推荐路径失败，OCR 兜底仍保留

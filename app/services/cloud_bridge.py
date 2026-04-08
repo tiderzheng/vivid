@@ -66,10 +66,6 @@ def run_cloud_quickread(args, settings) -> dict[str, Any]:
         "vision_sample_ms": args.vision_sample_ms or "",
         "vision_min_duration_ms": args.vision_min_duration_ms or "",
     }
-    if getattr(args, "sessdata", None):
-        payload["sessdata"] = args.sessdata
-    if getattr(args, "no_sessdata", False):
-        payload["no_sessdata"] = "true"
 
     with requests.Session() as session:
         response = session.post(f"{base_url.rstrip('/')}/api/quickread", data=payload, timeout=30)

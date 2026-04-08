@@ -6,7 +6,6 @@ import inspect
 from pathlib import Path
 from typing import Any, Callable
 
-from ..exceptions import BilibiliSessdataExpiredError
 from ..models.artifact import ArtifactBundle
 from ..models.runtime import RuntimeOptions
 from ..models.source import SourceInfo
@@ -81,8 +80,6 @@ class OrchestratorResult:
 def run_quickread(
     options: RuntimeOptions,
     event_callback: QuickreadEventCallback | None = None,
-    *,
-    pause_on_bili_sessdata_expired: bool = False,
 ) -> OrchestratorResult:
     diagnostics: list[dict[str, Any]] = []
     recording_callback = _build_recording_callback(event_callback, diagnostics)
@@ -119,28 +116,14 @@ def run_quickread(
                 if platform == "bilibili":
                     from ..adapters.bilibili import BilibiliAdapter
                     adapter = BilibiliAdapter(options.bili_script)
-                    fetched_title = adapter.get_video_title(options.source, options.sessdata)
+                    fetched_title = adapter.get_video_title(options.source)
                 elif platform == "douyin":
                     from ..adapters.douyin import DouyinAdapter
                     adapter = DouyinAdapter(options.douyin_script)
                     fetched_title = adapter.get_video_title(options.source)
-                
+
                 if fetched_title:
                     _emit_event(recording_callback, "title_fetch", "获取视频标题", {"title": fetched_title})
-            except BilibiliSessdataExpiredError as exc:
-                _emit_event(
-                    recording_callback,
-                    "sessdata_refresh_required",
-                    "Bilibili SESSDATA 已失效，请先更新；若不更新，可清空后继续后续流程",
-                    {
-                        "error": str(exc),
-                        "error_code": "bili_sessdata_expired",
-                        "can_continue_without_sessdata": True,
-                    },
-                )
-                if pause_on_bili_sessdata_expired:
-                    raise
-                options.sessdata = None
             except Exception as exc:
                 _emit_event(
                     recording_callback,
@@ -159,12 +142,11 @@ def run_quickread(
                     options,
                     platform,
                     workdir,
-                event_callback=recording_callback,
-                checkpoint_callback=_build_checkpoint_callback(workdir),
-                resume_media_path=_resume_media_path(resume_state, resume_stage),
-                pause_on_bili_sessdata_expired=pause_on_bili_sessdata_expired,
-            ),
-        )
+                    event_callback=recording_callback,
+                    checkpoint_callback=_build_checkpoint_callback(workdir),
+                    resume_media_path=_resume_media_path(resume_state, resume_stage),
+                ),
+            )
             update_run_state(
                 workdir,
                 transcript=transcript_to_payload(transcript),

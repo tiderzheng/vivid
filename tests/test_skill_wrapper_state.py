@@ -13,6 +13,21 @@ def _powershell_executable() -> str | None:
     return shutil.which("pwsh") or shutil.which("powershell")
 
 
+def _bash_executable() -> str | None:
+    candidate = shutil.which("bash")
+    if not candidate:
+        return None
+    probe = subprocess.run(
+        [candidate, "--version"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        return None
+    return candidate
+
+
 @pytest.mark.skipif(_powershell_executable() is None, reason="PowerShell is not available")
 def test_vivid_operator_persists_and_reuses_repo_root_state(tmp_path):
     repo_root = tmp_path / "fake-repo"
@@ -354,3 +369,157 @@ def test_vivid_operator_explicit_execution_mode_overrides_persisted_cloud_settin
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["execution_mode"] == "local"
     assert payload["artifact_target"] == "local_only"
+
+
+@pytest.mark.skipif(_bash_executable() is None, reason="bash is not available")
+def test_vivid_operator_sh_preserves_cloud_settings_when_saving_defaults(tmp_path):
+    repo_root = tmp_path / "fake-repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    tool_script = scripts_dir / "vivid_tool.sh"
+    tool_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\"\n",
+        encoding="utf-8",
+    )
+    tool_script.chmod(0o755)
+
+    skill_root = tmp_path / "external-skill" / "skill" / "vivid-operator"
+    skill_scripts_dir = skill_root / "scripts"
+    skill_scripts_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        Path("skill/vivid-operator/scripts/vivid_operator.sh"),
+        skill_scripts_dir / "vivid_operator.sh",
+    )
+    (skill_scripts_dir / "vivid_operator.sh").chmod(0o755)
+
+    state_file = skill_root / "state" / "skill_state.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps(
+            {
+                "repo_root": str(repo_root),
+                "execution_mode": "cloud",
+                "artifact_target": "both",
+                "cloud_profile": "prod",
+                "cloud_base_url": "https://cloud.example",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    bash = _bash_executable()
+    assert bash is not None
+
+    result = subprocess.run(
+        [
+            bash,
+            str(skill_scripts_dir / "vivid_operator.sh"),
+            "-Action",
+            "quickread",
+            "-Source",
+            "https://example.com/demo",
+            "-Model",
+            "small",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={key: value for key, value in os.environ.items() if key != "VIVID_REPO_ROOT"},
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(state_file.read_text(encoding="utf-8"))
+    assert payload["default_whisper_model"] == "small"
+    assert payload["execution_mode"] == "cloud"
+    assert payload["artifact_target"] == "both"
+    assert payload["cloud_profile"] == "prod"
+    assert payload["cloud_base_url"] == "https://cloud.example"
+
+
+@pytest.mark.skipif(_bash_executable() is None, reason="bash is not available")
+def test_vivid_operator_sh_reuses_persisted_cloud_settings_after_saving_defaults(tmp_path):
+    repo_root = tmp_path / "fake-repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    tool_script = scripts_dir / "vivid_tool.sh"
+    tool_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' \"$@\"\n",
+        encoding="utf-8",
+    )
+    tool_script.chmod(0o755)
+
+    skill_root = tmp_path / "external-skill" / "skill" / "vivid-operator"
+    skill_scripts_dir = skill_root / "scripts"
+    skill_scripts_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        Path("skill/vivid-operator/scripts/vivid_operator.sh"),
+        skill_scripts_dir / "vivid_operator.sh",
+    )
+    wrapper_script = skill_scripts_dir / "vivid_operator.sh"
+    wrapper_script.chmod(0o755)
+
+    state_file = skill_root / "state" / "skill_state.json"
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    state_file.write_text(
+        json.dumps(
+            {
+                "repo_root": str(repo_root),
+                "execution_mode": "cloud",
+                "artifact_target": "both",
+                "cloud_profile": "prod",
+                "cloud_base_url": "https://cloud.example",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    bash = _bash_executable()
+    assert bash is not None
+
+    first = subprocess.run(
+        [
+            bash,
+            str(wrapper_script),
+            "-Action",
+            "quickread",
+            "-Source",
+            "https://example.com/demo",
+            "-Model",
+            "small",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={key: value for key, value in os.environ.items() if key != "VIVID_REPO_ROOT"},
+    )
+    assert first.returncode == 0, first.stderr or first.stdout
+
+    second = subprocess.run(
+        [
+            bash,
+            str(wrapper_script),
+            "-Action",
+            "quickread",
+            "-Source",
+            "https://example.com/demo",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={key: value for key, value in os.environ.items() if key != "VIVID_REPO_ROOT"},
+    )
+
+    assert second.returncode == 0, second.stderr or second.stdout
+    stdout = second.stdout
+    assert "--execution-mode" in stdout
+    assert "cloud" in stdout
+    assert "--artifact-target" in stdout
+    assert "both" in stdout
+    assert "--cloud-profile" in stdout
+    assert "prod" in stdout
+    assert "--cloud-base-url" in stdout
+    assert "https://cloud.example" in stdout

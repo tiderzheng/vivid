@@ -28,8 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Whisper model for Ears4",
     )
     parser.add_argument("--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
-    parser.add_argument("--sessdata", help="Override Bilibili session value")
-    parser.add_argument("--no-sessdata", action="store_true", help="Ignore BILI_SESSDATA and run without any Bilibili session")
+    parser.add_argument("--sessdata", help=argparse.SUPPRESS)
+    parser.add_argument("--no-sessdata", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--ffmpeg-bin", help="Override ffmpeg executable path")
     parser.add_argument("--whisper-root", help="Override local whisper package root")
     parser.add_argument("--ears4-api", help="Override Ears4 base URL")
@@ -116,8 +116,6 @@ def main() -> int:
             "output_format": args.format,
             "whisper_model": args.model,
             "forced_platform": args.platform,
-            "sessdata": args.sessdata,
-            "no_sessdata": args.no_sessdata,
             "ffmpeg_bin": args.ffmpeg_bin,
             "whisper_root": args.whisper_root,
             "ears4_api": args.ears4_api,

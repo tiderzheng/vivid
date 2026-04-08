@@ -14,8 +14,6 @@ param(
     [string]$ArtifactTarget,
     [string]$CloudProfile,
     [string]$CloudBaseUrl,
-    [string]$Sessdata,
-    [switch]$NoSessdata,
     [string]$VividRoot
 )
 
@@ -271,8 +269,6 @@ if ($Format) { $invokeArgs.Format = $Format }
         Save-SkillState @{ cloud_base_url = $CloudBaseUrl }
     }
 }
-if ($Sessdata) { $invokeArgs.Sessdata = $Sessdata }
-if ($NoSessdata) { $invokeArgs.NoSessdata = $true }
 
 & $tool @invokeArgs
 exit $LASTEXITCODE

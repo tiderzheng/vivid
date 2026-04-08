@@ -6,7 +6,7 @@ $venvPath = Join-Path $RepoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $lockFile = Join-Path $venvPath ".creating_lock"
 $requirementsPath = Join-Path $RepoRoot "requirements.txt"
-$torchMode = ($env:VIVID_TORCH_MODE ?? "").Trim().ToLowerInvariant()
+$torchMode = if ($env:VIVID_TORCH_MODE) { $env:VIVID_TORCH_MODE.Trim().ToLowerInvariant() } else { "" }
 
 if (Test-Path $venvPython) {
     return $venvPython

@@ -44,7 +44,6 @@ def test_build_vision_request_config(tmp_path):
         output_format="both",
         whisper_model="base",
         forced_platform=None,
-        sessdata=None,
         ffmpeg_bin="ffmpeg",
         whisper_root=None,
         ears4_api="http://127.0.0.1:7860",

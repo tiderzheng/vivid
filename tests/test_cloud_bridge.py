@@ -166,8 +166,8 @@ def test_run_cloud_quickread_uses_data_dir_only_for_local_sync_and_not_remote_re
             "vision_timeout": None,
             "vision_sample_ms": None,
             "vision_min_duration_ms": None,
-            "sessdata": None,
-            "no_sessdata": False,
+            "sessdata": "expired",
+            "no_sessdata": True,
             "artifact_target": "both",
             "cloud_profile": None,
             "cloud_base_url": "https://cloud.example",
@@ -177,6 +177,8 @@ def test_run_cloud_quickread_uses_data_dir_only_for_local_sync_and_not_remote_re
     payload = run_cloud_quickread(args, settings)
 
     assert "data_dir" not in captured["data"]
+    assert "sessdata" not in captured["data"]
+    assert "no_sessdata" not in captured["data"]
     assert payload["files"]["workdir"].endswith("local-sync\\demo")
 
 
@@ -225,8 +227,8 @@ def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, 
             "vision_timeout": None,
             "vision_sample_ms": None,
             "vision_min_duration_ms": None,
-            "sessdata": None,
-            "no_sessdata": False,
+            "sessdata": "expired",
+            "no_sessdata": True,
             "artifact_target": "cloud_only",
             "cloud_profile": "prod",
             "cloud_base_url": None,
@@ -237,3 +239,5 @@ def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, 
 
     assert payload["base_url"] == "https://profile.example"
     assert captured["url"] == "https://profile.example/api/quickread"
+    assert "sessdata" not in captured["data"]
+    assert "no_sessdata" not in captured["data"]

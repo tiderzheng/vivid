@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from .config import Settings, load_settings
-from .exceptions import BilibiliSessdataExpiredError
 from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
 from .services.cloud_bridge import CloudQuickreadError, run_cloud_quickread
@@ -48,8 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quickread.add_argument("-CloudProfile", "--cloud-profile")
     quickread.add_argument("-CloudBaseUrl", "--cloud-base-url")
-    quickread.add_argument("-Sessdata", "--sessdata")
-    quickread.add_argument("-NoSessdata", "--no-sessdata", action="store_true")
+    quickread.add_argument("-Sessdata", "--sessdata", help=argparse.SUPPRESS)
+    quickread.add_argument("-NoSessdata", "--no-sessdata", action="store_true", help=argparse.SUPPRESS)
     quickread.add_argument("-FfmpegBin", "--ffmpeg-bin")
     quickread.add_argument("-WhisperRoot", "--whisper-root")
     quickread.add_argument("-AcquisitionMode", "--acquisition-mode", choices=["auto", "smart", "prefer_ocr", "force_ocr"])
@@ -366,8 +365,6 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
                 "output_format": args.format,
                 "whisper_model": args.model,
                 "forced_platform": args.platform,
-                "sessdata": args.sessdata,
-                "no_sessdata": args.no_sessdata,
                 "ffmpeg_bin": args.ffmpeg_bin,
                 "whisper_root": args.whisper_root,
                 "acquisition_mode": args.acquisition_mode,
@@ -389,24 +386,10 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
                 "no_keep_files": args.no_keep_files,
             },
         )
-        result = run_quickread(options, pause_on_bili_sessdata_expired=True)
+        result = run_quickread(options)
         payload = _quickread_payload(args, result.to_dict(), None, True)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
-    except BilibiliSessdataExpiredError as exc:
-        payload = _quickread_payload(
-            args,
-            None,
-            str(exc),
-            False,
-            error_code="bili_sessdata_expired",
-            requires_user_input=True,
-            user_prompt="当前 Bilibili SESSDATA 可能已过期。请提供新的 SESSDATA；如果不提供，可清空后继续后续媒体、转录和 OCR 流程。",
-            can_continue_without_sessdata=True,
-            next_action_hint="重试 quickread 时传入 -Sessdata/--sessdata 新值；若用户不提供，则改用 -NoSessdata/--no-sessdata 显式忽略环境中的 BILI_SESSDATA。",
-        )
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 1
     except CloudQuickreadError as exc:
         remote = exc.payload
         payload = _quickread_payload(
@@ -417,7 +400,6 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
             error_code=remote.get("error_code"),
             requires_user_input=bool(remote.get("requires_user_input", False)),
             user_prompt=remote.get("user_prompt"),
-            can_continue_without_sessdata=bool(remote.get("can_continue_without_sessdata", False)),
             next_action_hint=remote.get("next_action_hint"),
         )
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -437,7 +419,6 @@ def _quickread_payload(
     error_code: str | None = None,
     requires_user_input: bool = False,
     user_prompt: str | None = None,
-    can_continue_without_sessdata: bool = False,
     next_action_hint: str | None = None,
 ) -> dict[str, Any]:
     return {
@@ -453,8 +434,6 @@ def _quickread_payload(
         "artifact_target": getattr(args, "artifact_target", "local_only"),
         "cloud_profile": getattr(args, "cloud_profile", None),
         "cloud_base_url": getattr(args, "cloud_base_url", None),
-        "sessdata_supplied": bool(getattr(args, "sessdata", None)),
-        "no_sessdata": bool(getattr(args, "no_sessdata", False)),
         "no_keep_files": bool(args.no_keep_files),
         "exit_code": 0 if ok else 1,
         "result": result,
@@ -477,7 +456,6 @@ def _quickread_payload(
         "error_summary": (result or {}).get("error_summary") if result else None,
         "requires_user_input": requires_user_input,
         "user_prompt": user_prompt,
-        "can_continue_without_sessdata": can_continue_without_sessdata,
         "next_action_hint": next_action_hint,
     }
 

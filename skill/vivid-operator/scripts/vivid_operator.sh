@@ -6,6 +6,22 @@ SKILL_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 STATE_FILE="$SKILL_ROOT/state/skill_state.json"
 LEGACY_STATE_FILE="$SKILL_ROOT/state/repo_root.json"
 
+json_python() {
+    if [[ -n "${VIVID_STATE_PYTHON:-}" ]]; then
+        printf '%s\n' "${VIVID_STATE_PYTHON}"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        command -v python3
+        return 0
+    fi
+    if command -v python >/dev/null 2>&1; then
+        command -v python
+        return 0
+    fi
+    return 1
+}
+
 is_valid_repo_root() {
     local candidate="${1:-}"
     [[ -n "$candidate" && -f "$candidate/scripts/vivid_tool.sh" ]]
@@ -27,6 +43,23 @@ read_state_value() {
     if [[ ! -f "$source_file" ]]; then
         return 1
     fi
+    local json_py
+    if json_py="$(json_python 2>/dev/null)"; then
+        "$json_py" - <<'PY' "$source_file" "$key"
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+key = sys.argv[2]
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    sys.exit(1)
+value = payload.get(key)
+if value in (None, ""):
+    sys.exit(1)
+print(value)
+PY
+        return $?
+    fi
     sed -n "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$source_file" | head -n 1
 }
 
@@ -35,6 +68,36 @@ save_skill_state() {
     local source="${2:-}"
     local default_whisper_model="${3:-}"
     local default_data_dir="${4:-}"
+    mkdir -p "$(dirname "$STATE_FILE")"
+    local json_py
+    if json_py="$(json_python 2>/dev/null)"; then
+        "$json_py" - <<'PY' "$STATE_FILE" "$repo_root" "$source" "$default_whisper_model" "$default_data_dir"
+import json, pathlib, sys
+from datetime import datetime, timezone
+
+path = pathlib.Path(sys.argv[1])
+payload = {}
+if path.exists():
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        payload = {}
+
+updates = {
+    "repo_root": sys.argv[2],
+    "source": sys.argv[3],
+    "default_whisper_model": sys.argv[4],
+    "default_data_dir": sys.argv[5],
+}
+for key, value in updates.items():
+    if value:
+        payload[key] = value
+payload["updated_at_utc"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+        return
+    fi
+
     local existing_repo_root existing_source existing_model existing_data_dir
     existing_repo_root="$(read_state_value repo_root || true)"
     existing_source="$(read_state_value source || true)"
@@ -46,7 +109,6 @@ save_skill_state() {
     if [[ -n "$default_whisper_model" ]]; then existing_model="$default_whisper_model"; fi
     if [[ -n "$default_data_dir" ]]; then existing_data_dir="$default_data_dir"; fi
 
-    mkdir -p "$(dirname "$STATE_FILE")"
     printf '{\n  "repo_root": "%s",\n  "source": "%s",\n  "default_whisper_model": "%s",\n  "default_data_dir": "%s",\n  "updated_at_utc": "%s"\n}\n' \
         "$(json_escape "$existing_repo_root")" \
         "$(json_escape "$existing_source")" \
@@ -310,7 +372,8 @@ if [[ "$action" == "quickread" ]]; then
         existing_source="$(read_state_value source || true)"
         save_skill_state "$existing_repo_root" "$existing_source" "$explicit_model" "$explicit_data_dir"
         if [[ -n "$explicit_execution_mode" || -n "$explicit_artifact_target" || -n "$explicit_cloud_profile" || -n "$explicit_cloud_base_url" ]]; then
-            python - <<'PY' "$STATE_FILE" "$explicit_execution_mode" "$explicit_artifact_target" "$explicit_cloud_profile" "$explicit_cloud_base_url"
+            json_py="$(json_python)"
+            "$json_py" - <<'PY' "$STATE_FILE" "$explicit_execution_mode" "$explicit_artifact_target" "$explicit_cloud_profile" "$explicit_cloud_base_url"
 import json, sys, pathlib
 path = pathlib.Path(sys.argv[1])
 payload = json.loads(path.read_text(encoding="utf-8"))

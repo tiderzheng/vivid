@@ -32,7 +32,6 @@ def _build_settings(tmp_path: Path) -> Settings:
         dashscope_model="model-b",
         siliconflow_api_key=None,
         dashscope_api_key=None,
-        bili_sessdata="env-sessdata",
         bili_script=tmp_path / "bili.py",
         douyin_script=tmp_path / "douyin.js",
         vision_api_config_id=None,
@@ -53,42 +52,20 @@ def _build_settings(tmp_path: Path) -> Settings:
     )
 
 
-def test_runtime_factory_uses_env_sessdata_by_default(tmp_path):
-    settings = _build_settings(tmp_path)
-
-    options = build_runtime_options(settings, {"source": "https://www.bilibili.com/video/BV1xx"})
-
-    assert options.sessdata == "env-sessdata"
-
-
-def test_runtime_factory_prefers_explicit_sessdata_over_env(tmp_path):
+def test_runtime_factory_builds_options_without_sessdata_state(tmp_path):
     settings = _build_settings(tmp_path)
 
     options = build_runtime_options(
         settings,
-        {"source": "https://www.bilibili.com/video/BV1xx", "sessdata": "explicit-sessdata"},
+        {
+            "source": "https://www.bilibili.com/video/BV1xx",
+            "forced_platform": "bilibili",
+            "acquisition_mode": "smart",
+            "sessdata": "ignored",
+            "no_sessdata": True,
+        },
     )
 
-    assert options.sessdata == "explicit-sessdata"
-
-
-def test_runtime_factory_can_explicitly_disable_env_sessdata(tmp_path):
-    settings = _build_settings(tmp_path)
-
-    options = build_runtime_options(
-        settings,
-        {"source": "https://www.bilibili.com/video/BV1xx", "no_sessdata": True},
-    )
-
-    assert options.sessdata is None
-
-
-def test_runtime_factory_treats_explicit_blank_sessdata_as_disabled(tmp_path):
-    settings = _build_settings(tmp_path)
-
-    options = build_runtime_options(
-        settings,
-        {"source": "https://www.bilibili.com/video/BV1xx", "sessdata": ""},
-    )
-
-    assert options.sessdata is None
+    assert options.forced_platform == "bilibili"
+    assert options.acquisition_mode == "smart"
+    assert not hasattr(options, "sessdata")
