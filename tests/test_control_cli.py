@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from app.cli import build_parser as build_app_parser
 from app.config import Settings
 from app.control_cli import _run_quickread, build_doctor_payload, build_parser, build_paths_payload
 from app.services.cloud_bridge import CloudQuickreadError
@@ -199,9 +200,60 @@ def test_quickread_parser_accepts_legacy_sessdata_flags():
     assert args.no_sessdata is True
 
 
-def test_run_quickread_omits_removed_sessdata_fields(tmp_path, monkeypatch, capsys):
+def test_app_cli_parser_accepts_bili_cookie_flag():
+    parser = build_app_parser()
+    args = parser.parse_args(
+        [
+            "https://www.bilibili.com/video/BV1xx",
+            "--bili-cookie",
+            "SESSDATA=demo; bili_jct=token",
+        ]
+    )
+
+    assert args.bili_cookie == "SESSDATA=demo; bili_jct=token"
+
+
+def test_app_cli_parser_accepts_legacy_sessdata_flag():
+    parser = build_app_parser()
+    args = parser.parse_args(
+        [
+            "https://www.bilibili.com/video/BV1xx",
+            "--sessdata",
+            "expired",
+            "--no-sessdata",
+        ]
+    )
+
+    assert args.sessdata == "expired"
+    assert args.no_sessdata is True
+
+
+def test_quickread_parser_accepts_bili_cookie_flag():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://www.bilibili.com/video/BV1xx",
+            "--bili-cookie",
+            "SESSDATA=demo; bili_jct=token",
+        ]
+    )
+
+    assert args.bili_cookie == "SESSDATA=demo; bili_jct=token"
+
+
+def test_run_quickread_forwards_bili_cookie_without_exposing_it(tmp_path, monkeypatch, capsys):
     settings = _build_settings(tmp_path)
-    args = build_parser().parse_args(["quickread", "--source", "https://www.bilibili.com/video/BV1xx"])
+    args = build_parser().parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://www.bilibili.com/video/BV1xx",
+            "--bili-cookie",
+            "SESSDATA=demo; bili_jct=token",
+        ]
+    )
     captured = {}
 
     def fake_build_runtime_options(_settings, values):
@@ -218,11 +270,44 @@ def test_run_quickread_omits_removed_sessdata_fields(tmp_path, monkeypatch, caps
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
+    assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert "bili_cookie" not in payload
     assert "sessdata" not in captured["values"]
     assert "no_sessdata" not in captured["values"]
-    assert "sessdata_supplied" not in payload
+
+
+def test_run_quickread_forwards_legacy_sessdata_without_exposing_it(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(
+        [
+            "quickread",
+            "--source",
+            "https://www.bilibili.com/video/BV1xx",
+            "--sessdata",
+            "fresh-cookie",
+            "--no-sessdata",
+        ]
+    )
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr("app.control_cli.build_runtime_options", fake_build_runtime_options)
+    monkeypatch.setattr(
+        "app.control_cli.run_quickread",
+        lambda *args, **kwargs: type("Result", (), {"to_dict": lambda self: {"error_summary": None}})(),
+    )
+
+    exit_code = _run_quickread(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert captured["values"]["sessdata"] == "fresh-cookie"
+    assert captured["values"]["no_sessdata"] is True
+    assert "sessdata" not in payload
     assert "no_sessdata" not in payload
-    assert "can_continue_without_sessdata" not in payload
 
 
 def test_run_quickread_cloud_mode_uses_cloud_executor(tmp_path, monkeypatch, capsys):

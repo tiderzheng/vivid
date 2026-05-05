@@ -39,8 +39,8 @@ class Settings:
     llm_max_chars: int
     siliconflow_base_url: str
     dashscope_base_url: str
-    siliconflow_model: str
-    dashscope_model: str
+    siliconflow_model: str | None
+    dashscope_model: str | None
     siliconflow_api_key: str | None
     dashscope_api_key: str | None
     bili_script: Path | None
@@ -60,11 +60,17 @@ class Settings:
     vision_api_configs_path: Path
     vision_prompts_path: Path
     transcription_presets_path: Path
+    bili_cookie: str | None = None
+    sessdata: str | None = None
     summary_prompt_id: str | None = None
     summary_system_prompt: str | None = None
     summary_user_prompt: str | None = None
     summary_prompts_path: Path | None = None
     summary_providers_path: Path | None = None
+    calibration_prompt_id: str | None = None
+    calibration_system_prompt: str | None = None
+    calibration_user_prompt: str | None = None
+    calibration_prompts_path: Path | None = None
 
 
 def load_settings() -> Settings:
@@ -106,8 +112,8 @@ def load_settings() -> Settings:
         llm_max_chars=int(os.environ.get("VIVID_LLM_MAX_CHARS", "8000")),
         siliconflow_base_url=os.environ.get("SILICONFLOW_BASE_URL", DEFAULT_SILICONFLOW_BASE),
         dashscope_base_url=os.environ.get("DASHSCOPE_BASE_URL", DEFAULT_DASHSCOPE_BASE),
-        siliconflow_model=os.environ.get("VIVID_SILICONFLOW_MODEL", "deepseek-ai/DeepSeek-V3.2"),
-        dashscope_model=os.environ.get("VIVID_DASHSCOPE_MODEL", "qwen-plus"),
+        siliconflow_model=os.environ.get("VIVID_SILICONFLOW_MODEL") or None,
+        dashscope_model=os.environ.get("VIVID_DASHSCOPE_MODEL") or None,
         siliconflow_api_key=os.environ.get("SILICONFLOW_API_KEY") or None,
         dashscope_api_key=os.environ.get("DASHSCOPE_API_KEY") or None,
         bili_script=Path(
@@ -156,6 +162,8 @@ def load_settings() -> Settings:
                 str(repo_root / "configs" / "transcription" / "presets.json"),
             )
         ),
+        bili_cookie=os.environ.get("VIVID_BILI_COOKIE") or None,
+        sessdata=os.environ.get("BILI_SESSDATA") or None,
         summary_prompt_id=os.environ.get("VIVID_SUMMARY_PROMPT_ID") or None,
         summary_system_prompt=os.environ.get("VIVID_SUMMARY_SYSTEM_PROMPT") or None,
         summary_user_prompt=os.environ.get("VIVID_SUMMARY_USER_PROMPT") or None,
@@ -169,6 +177,15 @@ def load_settings() -> Settings:
             os.environ.get(
                 "VIVID_SUMMARY_PROVIDERS_FILE",
                 str(repo_root / "configs" / "summary" / "providers.json"),
+            )
+        ),
+        calibration_prompt_id=os.environ.get("VIVID_CALIBRATION_PROMPT_ID") or None,
+        calibration_system_prompt=os.environ.get("VIVID_CALIBRATION_SYSTEM_PROMPT") or None,
+        calibration_user_prompt=os.environ.get("VIVID_CALIBRATION_USER_PROMPT") or None,
+        calibration_prompts_path=Path(
+            os.environ.get(
+                "VIVID_CALIBRATION_PROMPTS_FILE",
+                str(repo_root / "configs" / "calibration" / "prompts.json"),
             )
         ),
     )

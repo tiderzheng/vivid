@@ -3,6 +3,7 @@ from __future__ import annotations
 import requests
 
 from ..exceptions import VividError
+from ..models.calibration import CalibrationResult
 from ..models.summary import SummaryResult
 from ..subsystems.summary.models import SummaryProviderConfig
 from ..utils.json_utils import extract_json_block
@@ -116,10 +117,52 @@ class LlmAdapter:
         )
 
     def _render_summary_user_prompt(self, transcript: str) -> str:
-        template = self.summary_user_prompt.strip()
-        if "{transcript}" in template:
-            return template.replace("{transcript}", transcript)
-        return f"{template}\n\nTranscript:\n{transcript}"
+        return _render_prompt_template(self.summary_user_prompt, transcript)
+
+    def request_text(
+        self,
+        *,
+        system_prompt: str,
+        user_prompt_template: str,
+        transcript: str,
+    ) -> str:
+        """Call LLM with given prompts, return raw text response. Falls back across providers."""
+        clipped = trim_for_llm(transcript, self.llm_max_chars)
+        user_prompt = _render_prompt_template(user_prompt_template, clipped)
+        failures: list[str] = []
+        for provider in self.providers:
+            try:
+                response = requests.post(
+                    provider.base_url,
+                    headers={
+                        "Authorization": f"Bearer {provider.api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": provider.model,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        "temperature": 0.4,
+                    },
+                    timeout=360,
+                )
+                response.raise_for_status()
+                text = response.json()["choices"][0]["message"]["content"].strip()
+                if not text:
+                    raise VividError(f"{provider.provider_name} {provider.model} returned empty response.")
+                return text
+            except Exception as exc:
+                failures.append(f"{provider.provider_name} {provider.model}: {exc}")
+                log_exception(
+                    "llm_request_text_failed",
+                    exc,
+                    provider=provider.provider_id,
+                    model=provider.model,
+                    base_url=provider.base_url,
+                )
+        raise VividError("all providers failed for request_text: " + "; ".join(failures))
 
 
 def fallback_summary(transcript: str) -> SummaryResult:
@@ -152,5 +195,21 @@ def fallback_summary(transcript: str) -> SummaryResult:
         controversies=controversies,
         action_suggestions=action_suggestions,
         playful_comment=playful_comment,
+        provider="rule-based fallback",
+    )
+
+
+def _render_prompt_template(template: str, transcript: str) -> str:
+    tpl = template.strip()
+    if "{transcript}" in tpl:
+        return tpl.replace("{transcript}", transcript)
+    return f"{tpl}\n\nTranscript:\n{transcript}"
+
+
+def fallback_calibration(transcript: str) -> CalibrationResult:
+    text = transcript.strip()
+    return CalibrationResult(
+        cn_text=text,
+        en_text=f"[Calibration unavailable — raw transcript]\n\n{text}",
         provider="rule-based fallback",
     )

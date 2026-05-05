@@ -36,10 +36,10 @@ description: Use when a user pastes a bilibili/douyin/youtube URL, a local video
 - “你想让我做什么”
 - “你要 transcript 还是 summary”
 - “要不要我先分析一下这个链接”
-- “你要不要提供 Bilibili 的 Cookie / SESSDATA”
+- “你要不要先提供 Bilibili 的 Cookie / SESSDATA”
 - “你想用哪个平台/模型/输出目录”
 
-默认值优先级已经由 Vivid 和 `skill_state.json` 处理。来源足够时，先执行。
+默认值优先级已经由 Vivid 和 `skill_state.json` 处理。来源足够时，先执行。`Bilibili` 首次尝试也一样，先走匿名/指纹模式，不要预设“必须先登录”。
 
 ## Default Action
 
@@ -117,13 +117,16 @@ Linux/macOS:
 
 ## Bilibili Rule
 
-- 当前项目已移除 `Bilibili` 的 `SESSDATA` 和官方字幕优先逻辑
-- `Bilibili` 现在和 `Douyin` 一样：直接下载媒体，再按 `acquisition_mode` 走 `Whisper / OCR`
-- 不要要求用户提供 `SESSDATA`
-- 不要建议 `-Sessdata`、`-NoSessdata`、`--sessdata`、`--no-sessdata`
-- 不要等待或处理 `bili_sessdata_expired` 之类的旧错误码
+- `Bilibili` 仍然走“直接下载媒体 -> Whisper / OCR”链路，不恢复官方字幕优先
+- helper 现在支持三层策略：完整 `Cookie` 优先，`SESSDATA` 兼容回退，无凭据时自动补匿名指纹 `Cookie`
+- 在首次尝试前，不要要求用户先提供 `Cookie / SESSDATA`
+- 只有当错误明确指向 `-101`、`账号未登录`、`login required` 之类的登录失败时，才引导用户本次临时提供凭据
+- 发生登录失败时，优先要 `Bilibili` 完整 `Cookie`，使用 `-BiliCookie` / `--bili-cookie` 或 `VIVID_BILI_COOKIE`
+- 只有拿不到完整 `Cookie` 时，才兼容 `-Sessdata` / `--sessdata` 或 `BILI_SESSDATA`
+- `-NoSessdata` / `--no-sessdata` 只在用户明确要禁用回退时才提，不要默认建议
+- 不要让用户把 `Cookie / SESSDATA` 写入 `skill_state.json`、文档、prompt 或日志
 
-如果用户问“为什么不用 SESSDATA”，再解释这是当前项目已经移除的旧链路。
+如果用户问“为什么完整 Cookie 优先”，解释需要的不只是 `SESSDATA`，完整 `Cookie` 更容易覆盖 `bili_jct`、`DedeUserID` 等登录态，helper 也会自动补匿名指纹字段。
 
 ## Pressure Examples
 
@@ -136,6 +139,7 @@ Linux/macOS:
 | 上一轮已给链接，这一轮说“继续” | 复用已有 `source` 执行 | 重新盘问视频来源 |
 | `用瞬知看下这个 /path/to/demo.wav` | 直接执行 `quickread` | 先解释功能 |
 | `走云端处理这个 https://...` 且没配置云端地址 | 只问远端 API 地址和产物策略 | 先追问一堆可选参数 |
+| `Bilibili` 返回 `-101: 账号未登录` | 让用户本次临时提供完整 `Cookie` 重试；拿不到时再兼容 `SESSDATA` | 继续空跑，或让用户把凭据写进状态文件 |
 | 两个链接 + “都看一下” | 逐个执行并分别返回结果 | 问“你到底想处理哪个” |
 | 两个链接但没说是否都处理 | 问“都处理还是只处理一个？” | 擅自忽略其中一个 |
 

@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from ..models.artifact import ArtifactBundle
+from ..models.calibration import CalibrationResult
 from ..models.source import SourceInfo
 from ..models.summary import SummaryResult
 from ..models.transcript import TranscriptResult
@@ -25,6 +26,7 @@ def save_artifacts(
     rendered: str,
     output_format: str = "both",
     diagnostics: list[dict] | None = None,
+    calibration: CalibrationResult | None = None,
 ) -> ArtifactBundle:
     artifacts_dir = workdir / "artifacts"
     bundle = ArtifactBundle(
@@ -36,14 +38,19 @@ def save_artifacts(
         summary_json=artifacts_dir / "summary.json",
         metadata_json=artifacts_dir / "metadata.json",
         checkpoint_json=checkpoint_path(workdir),
+        calibrated_cn_markdown=artifacts_dir / "calibrated_cn.md",
+        calibrated_en_markdown=artifacts_dir / "calibrated_en.md",
     )
-    vector_paths = write_vector_source_bundle(workdir, source, transcript, summary, artifacts_dir)
+    vector_paths = write_vector_source_bundle(workdir, source, transcript, summary, artifacts_dir, calibration=calibration)
     bundle.vector_source_dir = vector_paths["vector_source_dir"]
     bundle.vector_document_json = vector_paths["vector_document_json"]
     bundle.vector_chunks_jsonl = vector_paths["vector_chunks_jsonl"]
     bundle.vector_manifest_json = vector_paths["vector_manifest_json"]
     _write_text(bundle.quickread_markdown, rendered.rstrip() + "\n")
     _write_text(bundle.transcript_text, transcript.text.rstrip() + "\n")
+    if calibration is not None:
+        _write_text(bundle.calibrated_cn_markdown, calibration.cn_text.rstrip() + "\n")
+        _write_text(bundle.calibrated_en_markdown, calibration.en_text.rstrip() + "\n")
     _write_text(
         bundle.summary_markdown,
         "\n".join(
@@ -115,6 +122,8 @@ def save_artifacts(
                     "summary_json": str(bundle.summary_json),
                     "metadata_json": str(bundle.metadata_json),
                     "checkpoint_json": str(bundle.checkpoint_json) if bundle.checkpoint_json else None,
+                    "calibrated_cn_markdown": str(bundle.calibrated_cn_markdown),
+                    "calibrated_en_markdown": str(bundle.calibrated_en_markdown),
                 },
             },
             ensure_ascii=False,

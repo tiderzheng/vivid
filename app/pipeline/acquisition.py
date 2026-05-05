@@ -39,6 +39,8 @@ def create_media_path(
             source,
             workdir,
             options.ffmpeg_bin,
+            bili_cookie=options.bili_cookie,
+            sessdata=options.sessdata,
         )
     if platform == "douyin":
         _emit_event(event_callback, "download", "开始下载 Douyin 媒体")

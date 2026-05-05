@@ -7,6 +7,7 @@ param(
     [string]$Platform,
     [string]$Model,
     [string]$Sessdata,
+    [string]$BiliCookie,
     [switch]$NoSessdata,
     [string]$FfmpegBin,
     [string]$WhisperRoot,
@@ -43,6 +44,9 @@ if ($ProjectName) { $args += @("--project-name", $ProjectName) }
 if ($DataDir) { $args += @("--data-dir", $DataDir) }
 if ($Platform) { $args += @("--platform", $Platform) }
 if ($Model) { $args += @("--model", $Model) }
+if ($BiliCookie) { $args += @("--bili-cookie", $BiliCookie) }
+if ($Sessdata) { $args += @("--sessdata", $Sessdata) }
+if ($NoSessdata) { $args += "--no-sessdata" }
 if ($FfmpegBin) { $args += @("--ffmpeg-bin", $FfmpegBin) }
 if ($WhisperRoot) { $args += @("--whisper-root", $WhisperRoot) }
 if ($AcquisitionMode) { $args += @("--acquisition-mode", $AcquisitionMode) }

@@ -371,6 +371,70 @@ def test_vivid_operator_explicit_execution_mode_overrides_persisted_cloud_settin
     assert payload["artifact_target"] == "local_only"
 
 
+@pytest.mark.skipif(_powershell_executable() is None, reason="PowerShell is not available")
+def test_vivid_operator_ps1_forwards_bilibili_auth_inputs_without_persisting_them(tmp_path):
+    repo_root = tmp_path / "fake-repo"
+    scripts_dir = repo_root / "scripts"
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    (scripts_dir / "vivid_tool.ps1").write_text(
+        "param(\n"
+        "  [string]$Action,\n"
+        "  [string]$Source,\n"
+        "  [string]$BiliCookie,\n"
+        "  [string]$Sessdata,\n"
+        "  [switch]$NoSessdata\n"
+        ")\n"
+        "Write-Output (@{ ok = $true; action = $Action; source = $Source; bili_cookie = $BiliCookie; sessdata = $Sessdata; no_sessdata = [bool]$NoSessdata } | ConvertTo-Json -Compress)\n",
+        encoding="utf-8",
+    )
+
+    skill_root = tmp_path / "external-skill" / "skill" / "vivid-operator"
+    skill_scripts_dir = skill_root / "scripts"
+    skill_scripts_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(
+        Path("skill/vivid-operator/scripts/vivid_operator.ps1"),
+        skill_scripts_dir / "vivid_operator.ps1",
+    )
+
+    state_file = skill_root / "state" / "skill_state.json"
+    powershell = _powershell_executable()
+    assert powershell is not None
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(skill_scripts_dir / "vivid_operator.ps1"),
+            "-Action",
+            "quickread",
+            "-Source",
+            "https://example.com/demo",
+            "-VividRoot",
+            str(repo_root),
+            "-BiliCookie",
+            "SESSDATA=demo; bili_jct=token",
+            "-Sessdata",
+            "legacy-demo",
+            "-NoSessdata",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={key: value for key, value in os.environ.items() if key != "VIVID_REPO_ROOT"},
+    )
+
+    assert result.returncode == 0, result.stderr or result.stdout
+    payload = json.loads(result.stdout.strip().splitlines()[-1])
+    assert payload["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert payload["sessdata"] == "legacy-demo"
+    assert payload["no_sessdata"] is True
+    cached = state_file.read_text(encoding="utf-8")
+    assert "SESSDATA=demo; bili_jct=token" not in cached
+    assert "legacy-demo" not in cached
+
+
 @pytest.mark.skipif(_bash_executable() is None, reason="bash is not available")
 def test_vivid_operator_sh_preserves_cloud_settings_when_saving_defaults(tmp_path):
     repo_root = tmp_path / "fake-repo"

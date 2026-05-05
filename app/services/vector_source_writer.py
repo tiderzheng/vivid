@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ..models.calibration import CalibrationResult
 from ..models.summary import SummaryResult
 from ..models.transcript import TranscriptResult
 from ..models.source import SourceInfo
@@ -17,6 +18,7 @@ def write_vector_source_bundle(
     transcript: TranscriptResult,
     summary: SummaryResult,
     artifacts_dir: Path,
+    calibration: CalibrationResult | None = None,
 ) -> dict[str, Path]:
     vector_dir = workdir / "vector_source"
     vector_dir.mkdir(parents=True, exist_ok=True)
@@ -40,10 +42,11 @@ def write_vector_source_bundle(
             "media_path": str(transcript.media_path) if transcript.media_path else None,
             "audio_path": str(transcript.audio_path) if transcript.audio_path else None,
         },
+        "calibration": calibration.to_payload() if calibration else None,
     }
     document_path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    chunks = _build_chunks(document, source, transcript, summary)
+    chunks = _build_chunks(document, source, transcript, summary, calibration=calibration)
     chunks_path.write_text(
         "".join(json.dumps(item, ensure_ascii=False) + "\n" for item in chunks),
         encoding="utf-8",
@@ -76,6 +79,7 @@ def _build_chunks(
     source: SourceInfo,
     transcript: TranscriptResult,
     summary: SummaryResult,
+    calibration: CalibrationResult | None = None,
 ) -> list[dict[str, Any]]:
     base_meta = {
         "source": source.raw_source,
@@ -123,4 +127,7 @@ def _build_chunks(
         transcript_parts = [transcript.text.strip()]
     for index, part in enumerate(transcript_parts, start=1):
         append_chunk("transcript", part, "transcript", {"part_index": index})
+    if calibration is not None:
+        append_chunk("calibrated_cn", calibration.cn_text, "calibration", {"language": "zh"})
+        append_chunk("calibrated_en", calibration.en_text, "calibration", {"language": "en"})
     return rows

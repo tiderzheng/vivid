@@ -18,3 +18,5 @@ class ArtifactBundle:
     vector_document_json: Path | None = None
     vector_chunks_jsonl: Path | None = None
     vector_manifest_json: Path | None = None
+    calibrated_cn_markdown: Path | None = None
+    calibrated_en_markdown: Path | None = None

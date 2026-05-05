@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..models.artifact import ArtifactBundle
+from ..models.calibration import CalibrationResult
 from ..models.runtime import RuntimeOptions
 from ..models.source import SourceInfo
 from ..models.summary import SummaryResult
@@ -17,6 +18,8 @@ from ..services.artifact_writer import save_artifacts
 from ..services.pathing import make_staging_workdir, move_to_final_workdir, relocate_path
 from ..services.project_naming import derive_title, infer_video_title, sanitize_name
 from ..services.run_state import (
+    calibration_from_payload,
+    calibration_to_payload,
     checkpoint_path,
     load_run_state,
     save_run_state,
@@ -27,6 +30,7 @@ from ..services.run_state import (
     update_run_state,
 )
 from .acquisition import acquire_transcript
+from .calibration import calibrate_transcript
 from .detector import detect_platform
 from .formatter import render_quickread
 from .summarization import summarize_transcript
@@ -43,6 +47,7 @@ class OrchestratorResult:
     artifacts: ArtifactBundle
     rendered: str
     diagnostics: list[dict[str, Any]] = field(default_factory=list)
+    calibration: CalibrationResult | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +64,7 @@ class OrchestratorResult:
                 **self.summary.to_payload(),
                 "provider": self.summary.provider,
             },
+            "calibration": self.calibration.to_payload() if self.calibration else None,
             "artifacts": {
                 "workdir": str(self.artifacts.workdir),
                 "artifacts_dir": str(self.artifacts.artifacts_dir),
@@ -66,6 +72,8 @@ class OrchestratorResult:
                 "vector_document_json": str(self.artifacts.vector_document_json) if self.artifacts.vector_document_json else None,
                 "vector_chunks_jsonl": str(self.artifacts.vector_chunks_jsonl) if self.artifacts.vector_chunks_jsonl else None,
                 "vector_manifest_json": str(self.artifacts.vector_manifest_json) if self.artifacts.vector_manifest_json else None,
+                "calibrated_cn_markdown": str(self.artifacts.calibrated_cn_markdown) if self.artifacts.calibrated_cn_markdown else None,
+                "calibrated_en_markdown": str(self.artifacts.calibrated_en_markdown) if self.artifacts.calibrated_en_markdown else None,
             },
             "rendered": self.rendered,
             "diagnostics": self.diagnostics,
@@ -116,7 +124,11 @@ def run_quickread(
                 if platform == "bilibili":
                     from ..adapters.bilibili import BilibiliAdapter
                     adapter = BilibiliAdapter(options.bili_script)
-                    fetched_title = adapter.get_video_title(options.source)
+                    fetched_title = adapter.get_video_title(
+                        options.source,
+                        bili_cookie=options.bili_cookie,
+                        sessdata=options.sessdata,
+                    )
                 elif platform == "douyin":
                     from ..adapters.douyin import DouyinAdapter
                     adapter = DouyinAdapter(options.douyin_script)
@@ -160,7 +172,7 @@ def run_quickread(
                 "已从断点恢复文本内容",
                 {"acquisition_method": transcript.acquisition_method},
             )
-        if transcript is not None and resume_stage not in {"summarize", "render", "artifacts"}:
+        if transcript is not None and resume_stage not in {"summarize", "calibrate", "render", "artifacts"}:
             _emit_event(
                 recording_callback,
                 "acquire_completed",
@@ -229,10 +241,43 @@ def run_quickread(
         else:
             _emit_event(recording_callback, "summarize", "已从断点恢复总结")
         _emit_event(recording_callback, "summarize_completed", "总结生成完成", {"provider": summary.provider})
+        calibration = _load_resumed_calibration(resume_state, resume_stage)
+        if calibration is None:
+            try:
+                _emit_event(recording_callback, "calibrate", "开始生成校准文本")
+                resume_cn = None
+                saved_cn = resume_state.get("calibration_cn_text")
+                if isinstance(saved_cn, str) and saved_cn.strip():
+                    resume_cn = saved_cn.strip()
+                calibration = _invoke_with_supported_kwargs(
+                    calibrate_transcript,
+                    options,
+                    transcript.text,
+                    event_callback=recording_callback,
+                    resume_cn_text=resume_cn,
+                    checkpoint_callback=_build_checkpoint_callback(workdir),
+                )
+                update_run_state(
+                    workdir,
+                    calibration=calibration_to_payload(calibration),
+                    last_completed_stage="calibrate",
+                )
+            except Exception as exc:
+                _emit_event(
+                    recording_callback,
+                    "calibration_failed",
+                    "校准文本生成失败，跳过校准",
+                    {"error": str(exc)},
+                )
+                calibration = None
+        else:
+            _emit_event(recording_callback, "calibrate", "已从断点恢复校准文本")
+        if calibration is not None:
+            _emit_event(recording_callback, "calibrate_completed", "校准文本生成完成", {"provider": calibration.provider})
         rendered = _load_resumed_rendered(resume_state, resume_stage)
         if rendered is None:
             _emit_event(recording_callback, "render", "开始渲染输出")
-            rendered = render_quickread(source, transcript, summary, options.output_format)
+            rendered = render_quickread(source, transcript, summary, options.output_format, calibration=calibration)
             update_run_state(workdir, rendered=rendered, last_completed_stage="render")
         else:
             _emit_event(recording_callback, "render", "已从断点恢复渲染结果")
@@ -245,6 +290,7 @@ def run_quickread(
             rendered,
             options.output_format,
             diagnostics=diagnostics,
+            calibration=calibration,
         )
         update_run_state(
             workdir,
@@ -252,6 +298,7 @@ def run_quickread(
             checkpoint_file=str(checkpoint_path(workdir)),
             transcript=transcript_to_payload(transcript),
             summary=summary_to_payload(summary),
+            calibration=calibration_to_payload(calibration) if calibration else None,
             rendered=rendered,
         )
         _emit_event(recording_callback, "completed", "产物写入完成", {"workdir": str(workdir)})
@@ -259,6 +306,7 @@ def run_quickread(
             source=source,
             transcript=transcript,
             summary=summary,
+            calibration=calibration,
             artifacts=artifacts,
             rendered=rendered,
             diagnostics=diagnostics,
@@ -312,7 +360,7 @@ def _build_checkpoint_callback(workdir: Any):
 
 
 def _load_resumed_transcript(resume_state: dict[str, Any], resume_stage: str | None) -> TranscriptResult | None:
-    if resume_stage not in {"summarize", "render", "artifacts"}:
+    if resume_stage not in {"summarize", "calibrate", "render", "artifacts"}:
         return None
     payload = resume_state.get("transcript")
     if not isinstance(payload, dict) or not payload.get("text"):
@@ -321,12 +369,21 @@ def _load_resumed_transcript(resume_state: dict[str, Any], resume_stage: str | N
 
 
 def _load_resumed_summary(resume_state: dict[str, Any], resume_stage: str | None) -> SummaryResult | None:
-    if resume_stage not in {"render", "artifacts"}:
+    if resume_stage not in {"calibrate", "render", "artifacts"}:
         return None
     payload = resume_state.get("summary")
     if not isinstance(payload, dict) or not payload.get("detailed"):
         raise ValueError(f"resume stage '{resume_stage}' requires a saved summary checkpoint")
     return summary_from_payload(payload)
+
+
+def _load_resumed_calibration(resume_state: dict[str, Any], resume_stage: str | None) -> CalibrationResult | None:
+    if resume_stage not in {"render", "artifacts"}:
+        return None
+    payload = resume_state.get("calibration")
+    if not isinstance(payload, dict) or not payload.get("cn_text"):
+        raise ValueError(f"resume stage '{resume_stage}' requires a saved calibration checkpoint")
+    return calibration_from_payload(payload)
 
 
 def _load_resumed_rendered(resume_state: dict[str, Any], resume_stage: str | None) -> str | None:

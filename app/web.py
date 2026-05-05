@@ -741,6 +741,7 @@ def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any
     values = {
         "project_name": _clean_form_value(form.get("project_name")),
         "data_dir": _clean_form_value(form.get("data_dir")) or str(preferred_output_dir or settings.data_dir),
+        "bili_cookie": _clean_form_value(form.get("bili_cookie")),
         "output_format": _clean_form_value(form.get("output_format")),
         "whisper_model": _clean_form_value(form.get("whisper_model")),
         "forced_platform": _clean_form_value(form.get("platform")),
@@ -766,6 +767,9 @@ def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any
         "force_ocr": _bool_value(form.get("force_ocr")),
         "no_keep_files": _checkbox_to_no_keep_files(form),
     }
+    sessdata = _clean_form_value(form.get("sessdata"))
+    if sessdata:
+        values["sessdata"] = sessdata
     return values
 
 
@@ -778,7 +782,16 @@ async def _collect_retry_overrides(request: Request) -> dict[str, Any]:
         payload = await request.form()
     if not isinstance(payload, dict) and not hasattr(payload, "get"):
         return {}
-    return {}
+    overrides: dict[str, Any] = {}
+    bili_cookie = _clean_form_value(payload.get("bili_cookie"))
+    if bili_cookie:
+        overrides["bili_cookie"] = bili_cookie
+    sessdata = _clean_form_value(payload.get("sessdata"))
+    if sessdata:
+        overrides["sessdata"] = sessdata
+    if _bool_value(payload.get("no_sessdata")):
+        overrides["no_sessdata"] = True
+    return overrides
 
 
 def _collect_sources_from_form(form: Any) -> list[str]:
@@ -884,6 +897,8 @@ def _serialize_result(result: OrchestratorResult) -> dict[str, Any]:
         "summary_json": str(result.artifacts.summary_json),
         "metadata_json": str(result.artifacts.metadata_json),
         "checkpoint_json": str(result.artifacts.checkpoint_json) if result.artifacts.checkpoint_json else None,
+        "calibrated_cn_markdown": str(result.artifacts.calibrated_cn_markdown) if result.artifacts.calibrated_cn_markdown else None,
+        "calibrated_en_markdown": str(result.artifacts.calibrated_en_markdown) if result.artifacts.calibrated_en_markdown else None,
     }
     payload["diagnostics"] = result.diagnostics
     payload["failure_chain"] = extract_failure_chain(result.diagnostics)
@@ -1038,6 +1053,12 @@ def _render_index() -> str:
         </label>
         <label>OCR System Prompt
           <textarea name="vision_system_prompt" placeholder="可选"></textarea>
+        </label>
+        <label>Bilibili Cookie
+          <textarea name="bili_cookie" rows="3" placeholder="SESSDATA=...; bili_jct=..."></textarea>
+        </label>
+        <label>兼容 SESSDATA（可选）
+          <input name="sessdata" placeholder="只填 SESSDATA 值；完整 Cookie 优先" />
         </label>
         <div class="grid2">
           <div class="hint">OCR API 按 OpenAI 兼容格式配置：`base + path + api_key + model`。</div>
@@ -1350,7 +1371,7 @@ def _render_index() -> str:
       lines.push(`<div class="hint">进度：${Number(job.progress || 0)}%${job.queue_position ? ` · 队列第 ${job.queue_position} 位` : ""}</div>`);
       lines.push(`<div class="hint">状态说明：${escapeHtml(job.message || "")}</div>`);
       lines.push(`<div class="links">
-        ${job.can_retry ? `<a href="#" onclick="retryJob('${escapeAttr(job.job_id)}'); return false;">重试</a>` : ""}
+        ${job.can_retry ? `<a href="#" onclick="retryJob('${escapeAttr(job.job_id)}', collectRetryOverrides()); return false;">重试</a>` : ""}
         ${job.can_cancel ? `<a href="#" onclick="cancelJob('${escapeAttr(job.job_id)}'); return false;">取消排队</a>` : ""}
         <a href="#" onclick="deleteJob('${escapeAttr(job.job_id)}'); return false;">删除历史</a>
       </div>`);
@@ -1420,9 +1441,10 @@ def _render_index() -> str:
 
     function persistForm() {
       const form = document.getElementById("quickread-form");
+      const sensitiveFields = new Set(["bili_cookie", "sessdata"]);
       const data = {};
       for (const element of form.elements) {
-        if (!element.name || element.type === "file") continue;
+        if (!element.name || element.type === "file" || sensitiveFields.has(element.name)) continue;
         data[element.name] = element.value;
       }
       localStorage.setItem(storageKey, JSON.stringify(data));
@@ -1433,7 +1455,9 @@ def _render_index() -> str:
       if (!text) return;
       try {
         const data = JSON.parse(text);
+        const sensitiveFields = new Set(["bili_cookie", "sessdata"]);
         for (const [key, value] of Object.entries(data)) {
+          if (sensitiveFields.has(key)) continue;
           const field = document.querySelector(`[name="${key}"]`);
           if (field && value !== null && value !== undefined && value !== "") {
             field.value = value;
@@ -1446,6 +1470,20 @@ def _render_index() -> str:
       const node = document.getElementById("form-message");
       node.textContent = message;
       node.style.color = isError ? "#ef4444" : "#94a3b8";
+    }
+
+    function collectRetryOverrides() {
+      const form = document.getElementById("quickread-form");
+      if (!form) return null;
+      const overrides = {};
+      for (const name of ["bili_cookie", "sessdata"]) {
+        const field = form.querySelector(`[name="${name}"]`);
+        const value = String(field?.value || "").trim();
+        if (value) {
+          overrides[name] = value;
+        }
+      }
+      return Object.keys(overrides).length ? overrides : null;
     }
 
     async function retryJob(jobId, overrides = null) {
@@ -1952,11 +1990,19 @@ def _progress_for_stage(stage: str, fallback: int) -> int | None:
         "acquire_completed": 70,
         "title": 74,
         "summarize": 78,
-        "summary_provider": 82,
-        "summary_provider_completed": 88,
-        "summarize_completed": 90,
-        "render": 93,
-        "artifacts": 96,
+        "summary_provider": 80,
+        "summary_provider_completed": 82,
+        "summarize_completed": 82,
+        "calibrate": 84,
+        "calibration_cn_provider": 86,
+        "calibration_cn_completed": 88,
+        "calibration_en_provider": 90,
+        "calibration_en_completed": 92,
+        "calibration_provider_completed": 93,
+        "calibrate_completed": 94,
+        "calibration_failed": 94,
+        "render": 94,
+        "artifacts": 97,
         "completed": 100,
         "failed": 100,
         "cancelled": 0,

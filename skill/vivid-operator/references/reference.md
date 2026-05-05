@@ -28,6 +28,9 @@
 | ArtifactTarget | `-ArtifactTarget` | `--artifact-target` | `local_only / cloud_only / both` |
 | CloudProfile | `-CloudProfile` | `--cloud-profile` | 云端配置名 |
 | CloudBaseUrl | `-CloudBaseUrl` | `--cloud-base-url` | 远端 Vivid Web API 地址 |
+| BiliCookie | `-BiliCookie` | `--bili-cookie` | `Bilibili` 完整 `Cookie`，登录失败时优先临时传入，不落盘 |
+| Sessdata | `-Sessdata` | `--sessdata` | 兼容旧链路，仅在拿不到完整 `Cookie` 时使用 |
+| NoSessdata | `-NoSessdata` | `--no-sessdata` | 禁用 `SESSDATA` 回退 |
 
 ### OCR / Vision 参数
 
@@ -57,7 +60,17 @@
 - 本地视频路径
 - 本地音频路径
 
-`Bilibili` 现在按直接下载媒体处理，不再依赖 `SESSDATA` 或官方字幕优先。
+`Bilibili` 现在按直接下载媒体处理，不恢复官方字幕优先。helper 会优先使用完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名指纹 `Cookie`。
+
+## Bilibili Auth Priority
+
+1. `-BiliCookie` / `--bili-cookie`
+2. `VIVID_BILI_COOKIE`
+3. `-Sessdata` / `--sessdata`
+4. `BILI_SESSDATA`
+5. 匿名指纹模式
+
+`-NoSessdata` / `--no-sessdata` 会禁用第 3、4 步的回退。
 
 ## Success Payload
 

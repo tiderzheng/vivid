@@ -21,6 +21,12 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
     if _bool_value(values.get("force_ocr")):
         acquisition_mode = "force_ocr"
 
+    suppress_sessdata = _bool_value(values.get("no_sessdata"))
+    bili_cookie = _text_or_none(values.get("bili_cookie")) or settings.bili_cookie
+    sessdata = "" if suppress_sessdata else (_text_or_none(values.get("sessdata")) or settings.sessdata)
+    if not bili_cookie and sessdata:
+        bili_cookie = f"SESSDATA={sessdata}"
+
     return RuntimeOptions(
         source=_require_text(values, "source"),
         project_name=_text_or_none(values.get("project_name")),
@@ -108,6 +114,18 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
         ),
         summary_providers_path=(
             _coerce_path(values.get("summary_providers_path")) or settings.summary_providers_path
+        ),
+        bili_cookie=bili_cookie,
+        sessdata=sessdata,
+        calibration_prompt_id=_text_or_none(values.get("calibration_prompt_id")) or settings.calibration_prompt_id,
+        calibration_system_prompt=(
+            _text_or_none(values.get("calibration_system_prompt")) or settings.calibration_system_prompt
+        ),
+        calibration_user_prompt=(
+            _text_or_none(values.get("calibration_user_prompt")) or settings.calibration_user_prompt
+        ),
+        calibration_prompts_path=(
+            _coerce_path(values.get("calibration_prompts_path")) or settings.calibration_prompts_path
         ),
     )
 

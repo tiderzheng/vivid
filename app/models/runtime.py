@@ -31,8 +31,8 @@ class RuntimeOptions:
     dashscope_api_key: str | None
     siliconflow_base_url: str
     dashscope_base_url: str
-    siliconflow_model: str
-    dashscope_model: str
+    siliconflow_model: str | None
+    dashscope_model: str | None
     bili_script: Path | None
     douyin_script: Path | None
     vision_api_config_id: str | None
@@ -51,6 +51,8 @@ class RuntimeOptions:
     vision_prompts_path: Path
     transcription_presets_path: Path
     keep_files: bool
+    bili_cookie: str | None = None
+    sessdata: str | None = None
     resume_workdir: Path | None = None
     resume_stage: str | None = None
     summary_prompt_id: str | None = None
@@ -58,3 +60,7 @@ class RuntimeOptions:
     summary_user_prompt: str | None = None
     summary_prompts_path: Path | None = None
     summary_providers_path: Path | None = None
+    calibration_prompt_id: str | None = None
+    calibration_system_prompt: str | None = None
+    calibration_user_prompt: str | None = None
+    calibration_prompts_path: Path | None = None

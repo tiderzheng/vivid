@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 
 from .config import load_settings
@@ -30,6 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
     parser.add_argument("--sessdata", help=argparse.SUPPRESS)
     parser.add_argument("--no-sessdata", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--bili-cookie", default=os.environ.get("VIVID_BILI_COOKIE"), help="Bilibili cookie for helper auth")
     parser.add_argument("--ffmpeg-bin", help="Override ffmpeg executable path")
     parser.add_argument("--whisper-root", help="Override local whisper package root")
     parser.add_argument("--ears4-api", help="Override Ears4 base URL")
@@ -64,6 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-user-prompt", help="Override summary user prompt template; use {transcript} as placeholder")
     parser.add_argument("--summary-prompts-file", help="Override Vivid summary prompts file")
     parser.add_argument("--summary-providers-file", help="Override Vivid summary provider config file")
+    parser.add_argument("--calibration-prompt-id", help="Select calibration prompt preset id")
+    parser.add_argument("--calibration-system-prompt", help="Override calibration system prompt")
+    parser.add_argument("--calibration-user-prompt", help="Override calibration user prompt template")
+    parser.add_argument("--calibration-prompts-file", help="Override calibration prompts file")
     parser.add_argument("--vision-api-config-id", help="Override Eyes-side OCR config id")
     parser.add_argument(
         "--vision-backend",
@@ -107,58 +113,65 @@ def main() -> int:
         transcription_extract_audio = True
     if args.no_transcription_extract_audio:
         transcription_extract_audio = False
-    options = build_runtime_options(
-        settings,
-        {
-            "source": args.source,
-            "project_name": args.project_name,
-            "data_dir": args.data_dir,
-            "output_format": args.format,
-            "whisper_model": args.model,
-            "forced_platform": args.platform,
-            "ffmpeg_bin": args.ffmpeg_bin,
-            "whisper_root": args.whisper_root,
-            "ears4_api": args.ears4_api,
-            "eyes_api": args.eyes_api,
-            "language": args.language,
-            "transcription_preset_id": args.transcription_preset_id,
-            "acquisition_mode": acquisition_mode,
-            "transcription_backend": args.transcription_backend,
-            "transcription_device": args.transcription_device,
-            "transcription_task": args.transcription_task,
-            "transcription_extract_audio": transcription_extract_audio,
-            "transcription_output_dir": args.transcription_output_dir,
-            "transcribe_timeout": args.transcribe_timeout,
-            "ocr_timeout": args.ocr_timeout,
-            "llm_max_chars": args.llm_max_chars,
-            "siliconflow_model": args.siliconflow_model,
-            "dashscope_model": args.dashscope_model,
-            "summary_prompt_id": args.summary_prompt_id,
-            "summary_system_prompt": args.summary_system_prompt,
-            "summary_user_prompt": args.summary_user_prompt,
-            "summary_prompts_path": args.summary_prompts_file,
-            "summary_providers_path": args.summary_providers_file,
-            "vision_api_config_id": args.vision_api_config_id,
-            "vision_backend": args.vision_backend,
-            "vision_api_base": args.vision_api_base,
-            "vision_api_path": args.vision_api_path,
-            "vision_api_key": args.vision_api_key,
-            "vision_model": args.vision_model,
-            "vision_timeout": args.vision_timeout,
-            "vision_prompt_id": args.vision_prompt_id,
-            "vision_prompt": args.vision_prompt,
-            "vision_system_prompt": args.vision_system_prompt,
-            "vision_sample_ms": args.vision_sample_ms,
-            "vision_min_duration_ms": args.vision_min_duration_ms,
-            "vision_api_configs_path": args.vision_api_configs_file,
-            "vision_prompts_path": args.vision_prompts_file,
-            "transcription_presets_path": args.transcription_presets_file,
-            "no_keep_files": args.no_keep_files,
-            "prefer_ocr": args.prefer_ocr,
-            "force_ocr": args.force_ocr,
-            "no_transcription_extract_audio": args.no_transcription_extract_audio,
-        },
-    )
+    values = {
+        "source": args.source,
+        "project_name": args.project_name,
+        "data_dir": args.data_dir,
+        "bili_cookie": args.bili_cookie,
+        "output_format": args.format,
+        "whisper_model": args.model,
+        "forced_platform": args.platform,
+        "ffmpeg_bin": args.ffmpeg_bin,
+        "whisper_root": args.whisper_root,
+        "ears4_api": args.ears4_api,
+        "eyes_api": args.eyes_api,
+        "language": args.language,
+        "transcription_preset_id": args.transcription_preset_id,
+        "acquisition_mode": acquisition_mode,
+        "transcription_backend": args.transcription_backend,
+        "transcription_device": args.transcription_device,
+        "transcription_task": args.transcription_task,
+        "transcription_extract_audio": transcription_extract_audio,
+        "transcription_output_dir": args.transcription_output_dir,
+        "transcribe_timeout": args.transcribe_timeout,
+        "ocr_timeout": args.ocr_timeout,
+        "llm_max_chars": args.llm_max_chars,
+        "siliconflow_model": args.siliconflow_model,
+        "dashscope_model": args.dashscope_model,
+        "summary_prompt_id": args.summary_prompt_id,
+        "summary_system_prompt": args.summary_system_prompt,
+        "summary_user_prompt": args.summary_user_prompt,
+        "summary_prompts_path": args.summary_prompts_file,
+        "summary_providers_path": args.summary_providers_file,
+        "calibration_prompt_id": args.calibration_prompt_id,
+        "calibration_system_prompt": args.calibration_system_prompt,
+        "calibration_user_prompt": args.calibration_user_prompt,
+        "calibration_prompts_path": args.calibration_prompts_file,
+        "vision_api_config_id": args.vision_api_config_id,
+        "vision_backend": args.vision_backend,
+        "vision_api_base": args.vision_api_base,
+        "vision_api_path": args.vision_api_path,
+        "vision_api_key": args.vision_api_key,
+        "vision_model": args.vision_model,
+        "vision_timeout": args.vision_timeout,
+        "vision_prompt_id": args.vision_prompt_id,
+        "vision_prompt": args.vision_prompt,
+        "vision_system_prompt": args.vision_system_prompt,
+        "vision_sample_ms": args.vision_sample_ms,
+        "vision_min_duration_ms": args.vision_min_duration_ms,
+        "vision_api_configs_path": args.vision_api_configs_file,
+        "vision_prompts_path": args.vision_prompts_file,
+        "transcription_presets_path": args.transcription_presets_file,
+        "no_keep_files": args.no_keep_files,
+        "prefer_ocr": args.prefer_ocr,
+        "force_ocr": args.force_ocr,
+        "no_transcription_extract_audio": args.no_transcription_extract_audio,
+    }
+    if args.sessdata is not None:
+        values["sessdata"] = args.sessdata
+    if args.no_sessdata:
+        values["no_sessdata"] = True
+    options = build_runtime_options(settings, values)
     try:
         result = run_quickread(options)
         if args.json:

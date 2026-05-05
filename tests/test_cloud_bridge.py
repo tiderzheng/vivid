@@ -117,7 +117,7 @@ def test_sync_cloud_result_files_avoids_overwriting_existing_local_workdir(tmp_p
     assert (existing / "artifacts" / "summary.json").read_text(encoding="utf-8") == "old"
 
 
-def test_run_cloud_quickread_uses_data_dir_only_for_local_sync_and_not_remote_request(tmp_path, monkeypatch):
+def test_run_cloud_quickread_forwards_bilibili_auth_inputs_to_remote(tmp_path, monkeypatch):
     captured: dict[str, object] = {}
 
     class FakeResponse:
@@ -166,6 +166,7 @@ def test_run_cloud_quickread_uses_data_dir_only_for_local_sync_and_not_remote_re
             "vision_timeout": None,
             "vision_sample_ms": None,
             "vision_min_duration_ms": None,
+            "bili_cookie": "SESSDATA=demo; bili_jct=token",
             "sessdata": "expired",
             "no_sessdata": True,
             "artifact_target": "both",
@@ -177,8 +178,9 @@ def test_run_cloud_quickread_uses_data_dir_only_for_local_sync_and_not_remote_re
     payload = run_cloud_quickread(args, settings)
 
     assert "data_dir" not in captured["data"]
-    assert "sessdata" not in captured["data"]
-    assert "no_sessdata" not in captured["data"]
+    assert captured["data"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["data"]["sessdata"] == "expired"
+    assert captured["data"]["no_sessdata"] is True
     assert payload["files"]["workdir"].endswith("local-sync\\demo")
 
 
@@ -227,6 +229,7 @@ def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, 
             "vision_timeout": None,
             "vision_sample_ms": None,
             "vision_min_duration_ms": None,
+            "bili_cookie": "SESSDATA=profile-cookie",
             "sessdata": "expired",
             "no_sessdata": True,
             "artifact_target": "cloud_only",
@@ -239,5 +242,6 @@ def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, 
 
     assert payload["base_url"] == "https://profile.example"
     assert captured["url"] == "https://profile.example/api/quickread"
-    assert "sessdata" not in captured["data"]
-    assert "no_sessdata" not in captured["data"]
+    assert captured["data"]["bili_cookie"] == "SESSDATA=profile-cookie"
+    assert captured["data"]["sessdata"] == "expired"
+    assert captured["data"]["no_sessdata"] is True

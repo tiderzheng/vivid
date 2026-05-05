@@ -66,6 +66,14 @@ def run_cloud_quickread(args, settings) -> dict[str, Any]:
         "vision_sample_ms": args.vision_sample_ms or "",
         "vision_min_duration_ms": args.vision_min_duration_ms or "",
     }
+    bili_cookie = _optional_text(getattr(args, "bili_cookie", None))
+    sessdata = _optional_text(getattr(args, "sessdata", None))
+    if bili_cookie:
+        payload["bili_cookie"] = bili_cookie
+    if sessdata:
+        payload["sessdata"] = sessdata
+    if bool(getattr(args, "no_sessdata", False)):
+        payload["no_sessdata"] = True
 
     with requests.Session() as session:
         response = session.post(f"{base_url.rstrip('/')}/api/quickread", data=payload, timeout=30)
@@ -89,6 +97,13 @@ def run_cloud_quickread(args, settings) -> dict[str, Any]:
         Path(args.data_dir).expanduser() if getattr(args, "data_dir", None) else settings.data_dir,
         artifact_target=artifact_target,
     )
+
+
+def _optional_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def download_cloud_file(base_url: str, remote_path: str, destination: Path, timeout: int = 60) -> Path:
@@ -134,6 +149,8 @@ def sync_cloud_result_files(
         "vector_document_json": local_vector_dir / "document.json",
         "vector_chunks_jsonl": local_vector_dir / "chunks.jsonl",
         "vector_manifest_json": local_vector_dir / "manifest.json",
+        "calibrated_cn_markdown": local_artifacts_dir / "calibrated_cn.md",
+        "calibrated_en_markdown": local_artifacts_dir / "calibrated_en.md",
     }
 
     rewritten = dict(remote_files)

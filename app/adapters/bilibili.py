@@ -15,7 +15,12 @@ class BilibiliAdapter:
     def __init__(self, script_path: Path | None = None) -> None:
         self.script_path = script_path
 
-    def get_video_title(self, source: str) -> str | None:
+    def get_video_title(
+        self,
+        source: str,
+        bili_cookie: str | None = None,
+        sessdata: str | None = None,
+    ) -> str | None:
         """获取Bilibili视频标题，用于项目命名"""
         try:
             script_path = _resolve_script_path(self.script_path)
@@ -32,7 +37,7 @@ class BilibiliAdapter:
                 text=True,
                 cwd=script_path.parent,
                 timeout=30,
-                env=_helper_env(),
+                env=_helper_env(bili_cookie=bili_cookie, sessdata=sessdata),
             )
             if result.returncode == 0:
                 # 尝试解析JSON输出
@@ -52,6 +57,9 @@ class BilibiliAdapter:
         source: str,
         workdir: Path,
         ffmpeg_bin: str,
+        *,
+        bili_cookie: str | None = None,
+        sessdata: str | None = None,
     ) -> Path:
         script_path = _resolve_script_path(self.script_path)
         if shutil.which(ffmpeg_bin) is None and not Path(ffmpeg_bin).expanduser().exists():
@@ -73,7 +81,12 @@ class BilibiliAdapter:
             "--ffmpeg",
             ffmpeg_bin,
         ]
-        run_command(command, cwd=script_path.parent, retries=2, env=_helper_env())
+        run_command(
+            command,
+            cwd=script_path.parent,
+            retries=2,
+            env=_helper_env(bili_cookie=bili_cookie, sessdata=sessdata),
+        )
         media_path = newest_file(outdir, {".mp4", ".mp3", ".m4a", ".flac", ".wav"})
         if not media_path:
             raise VividError("Bilibili helper completed but no media file was produced.")
@@ -92,10 +105,32 @@ def _default_script_path() -> Path:
     return repo_root / "tools" / "bilibili" / "bili23_agent_cli.py"
 
 
-def _helper_env() -> dict[str, str]:
+def _helper_env(
+    *,
+    bili_cookie: str | None = None,
+    sessdata: str | None = None,
+) -> dict[str, str]:
     env = command_env()
+    fallback_cookie = env.get("VIVID_BILI_COOKIE") or env.get("BILI_COOKIE") or env.get("BILI_COOKIE_HEADER")
+    fallback_sessdata = env.get("BILI_SESSDATA")
+    resolved_cookie = _credential_or_none(fallback_cookie if bili_cookie is None else bili_cookie)
+    resolved_sessdata = _credential_or_none(fallback_sessdata if sessdata is None else sessdata)
+    env.pop("VIVID_BILI_COOKIE", None)
+    env.pop("BILI_COOKIE", None)
+    env.pop("BILI_COOKIE_HEADER", None)
     env.pop("BILI_SESSDATA", None)
+    if resolved_cookie:
+        env["VIVID_BILI_COOKIE"] = resolved_cookie
+    if resolved_sessdata:
+        env["BILI_SESSDATA"] = resolved_sessdata
     return env
+
+
+def _credential_or_none(value: str | None) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text or None
 
 
 def _extract_title_from_probe_payload(data: dict) -> str | None:

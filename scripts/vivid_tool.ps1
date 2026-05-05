@@ -15,6 +15,7 @@ param(
     [string]$CloudProfile,
     [string]$CloudBaseUrl,
     [string]$Sessdata,
+    [string]$BiliCookie,
     [switch]$NoSessdata,
     [string]$FfmpegBin,
     [string]$WhisperRoot,
@@ -105,6 +106,9 @@ switch ($Action) {
         if ($ArtifactTarget) { $cliArgs += @("--artifact-target", $ArtifactTarget) }
         if ($CloudProfile) { $cliArgs += @("--cloud-profile", $CloudProfile) }
         if ($CloudBaseUrl) { $cliArgs += @("--cloud-base-url", $CloudBaseUrl) }
+        if ($BiliCookie) { $cliArgs += @("--bili-cookie", $BiliCookie) }
+        if ($Sessdata) { $cliArgs += @("--sessdata", $Sessdata) }
+        if ($NoSessdata) { $cliArgs += "--no-sessdata" }
         if ($FfmpegBin) { $cliArgs += @("--ffmpeg-bin", $FfmpegBin) }
         if ($WhisperRoot) { $cliArgs += @("--whisper-root", $WhisperRoot) }
         if ($AcquisitionMode) { $cliArgs += @("--acquisition-mode", $AcquisitionMode) }

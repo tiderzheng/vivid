@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -49,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-CloudBaseUrl", "--cloud-base-url")
     quickread.add_argument("-Sessdata", "--sessdata", help=argparse.SUPPRESS)
     quickread.add_argument("-NoSessdata", "--no-sessdata", action="store_true", help=argparse.SUPPRESS)
+    quickread.add_argument("-BiliCookie", "--bili-cookie", default=os.environ.get("VIVID_BILI_COOKIE"), help="Bilibili cookie for helper auth")
     quickread.add_argument("-FfmpegBin", "--ffmpeg-bin")
     quickread.add_argument("-WhisperRoot", "--whisper-root")
     quickread.add_argument("-AcquisitionMode", "--acquisition-mode", choices=["auto", "smart", "prefer_ocr", "force_ocr"])
@@ -356,36 +358,39 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
             payload = _quickread_payload(args, result, None, True)
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             return 0
-        options = build_runtime_options(
-            settings,
-            {
-                "source": args.source,
-                "project_name": args.project_name,
-                "data_dir": args.data_dir,
-                "output_format": args.format,
-                "whisper_model": args.model,
-                "forced_platform": args.platform,
-                "ffmpeg_bin": args.ffmpeg_bin,
-                "whisper_root": args.whisper_root,
-                "acquisition_mode": args.acquisition_mode,
-                "prefer_ocr": args.prefer_ocr,
-                "force_ocr": args.force_ocr,
-                "transcription_backend": args.transcription_backend,
-                "vision_backend": args.vision_backend,
-                "transcribe_timeout": args.transcribe_timeout,
-                "ocr_timeout": args.ocr_timeout,
-                "summary_prompt_id": args.summary_prompt_id,
-                "summary_system_prompt": args.summary_system_prompt,
-                "summary_user_prompt": args.summary_user_prompt,
-                "summary_prompts_path": args.summary_prompts_file,
-                "summary_providers_path": args.summary_providers_file,
-                "vision_api_config_id": args.vision_api_config_id,
-                "vision_timeout": args.vision_timeout,
-                "vision_sample_ms": args.vision_sample_ms,
-                "vision_min_duration_ms": args.vision_min_duration_ms,
-                "no_keep_files": args.no_keep_files,
-            },
-        )
+        values = {
+            "source": args.source,
+            "project_name": args.project_name,
+            "data_dir": args.data_dir,
+            "bili_cookie": args.bili_cookie,
+            "output_format": args.format,
+            "whisper_model": args.model,
+            "forced_platform": args.platform,
+            "ffmpeg_bin": args.ffmpeg_bin,
+            "whisper_root": args.whisper_root,
+            "acquisition_mode": args.acquisition_mode,
+            "prefer_ocr": args.prefer_ocr,
+            "force_ocr": args.force_ocr,
+            "transcription_backend": args.transcription_backend,
+            "vision_backend": args.vision_backend,
+            "transcribe_timeout": args.transcribe_timeout,
+            "ocr_timeout": args.ocr_timeout,
+            "summary_prompt_id": args.summary_prompt_id,
+            "summary_system_prompt": args.summary_system_prompt,
+            "summary_user_prompt": args.summary_user_prompt,
+            "summary_prompts_path": args.summary_prompts_file,
+            "summary_providers_path": args.summary_providers_file,
+            "vision_api_config_id": args.vision_api_config_id,
+            "vision_timeout": args.vision_timeout,
+            "vision_sample_ms": args.vision_sample_ms,
+            "vision_min_duration_ms": args.vision_min_duration_ms,
+            "no_keep_files": args.no_keep_files,
+        }
+        if args.sessdata is not None:
+            values["sessdata"] = args.sessdata
+        if args.no_sessdata:
+            values["no_sessdata"] = True
+        options = build_runtime_options(settings, values)
         result = run_quickread(options)
         payload = _quickread_payload(args, result.to_dict(), None, True)
         print(json.dumps(payload, ensure_ascii=False, indent=2))

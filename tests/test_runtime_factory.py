@@ -49,10 +49,24 @@ def _build_settings(tmp_path: Path) -> Settings:
         vision_api_configs_path=tmp_path / "configs" / "vision" / "api_configs.json",
         vision_prompts_path=tmp_path / "configs" / "vision" / "prompts.json",
         transcription_presets_path=tmp_path / "configs" / "transcription" / "presets.json",
+        bili_cookie=None,
+        sessdata=None,
     )
 
 
-def test_runtime_factory_builds_options_without_sessdata_state(tmp_path):
+def test_load_settings_reads_bili_cookie_and_sessdata_env(monkeypatch):
+    monkeypatch.setenv("VIVID_BILI_COOKIE", "cookie-from-env")
+    monkeypatch.setenv("BILI_SESSDATA", "sessdata-from-env")
+
+    from app.config import load_settings
+
+    settings = load_settings()
+
+    assert settings.bili_cookie == "cookie-from-env"
+    assert settings.sessdata == "sessdata-from-env"
+
+
+def test_runtime_factory_prefers_explicit_bili_cookie_over_sessdata_sources(tmp_path):
     settings = _build_settings(tmp_path)
 
     options = build_runtime_options(
@@ -61,11 +75,61 @@ def test_runtime_factory_builds_options_without_sessdata_state(tmp_path):
             "source": "https://www.bilibili.com/video/BV1xx",
             "forced_platform": "bilibili",
             "acquisition_mode": "smart",
-            "sessdata": "ignored",
-            "no_sessdata": True,
+            "bili_cookie": "cookie-from-values",
+            "sessdata": "sessdata-from-values",
         },
     )
 
     assert options.forced_platform == "bilibili"
     assert options.acquisition_mode == "smart"
-    assert not hasattr(options, "sessdata")
+    assert options.bili_cookie == "cookie-from-values"
+    assert options.sessdata == "sessdata-from-values"
+
+
+def test_runtime_factory_uses_env_bili_cookie_before_explicit_sessdata(tmp_path):
+    settings = _build_settings(tmp_path)
+    settings.bili_cookie = "cookie-from-settings"
+    settings.sessdata = "sessdata-from-settings"
+
+    options = build_runtime_options(
+        settings,
+        {
+            "source": "https://www.bilibili.com/video/BV1xx",
+            "sessdata": "sessdata-from-values",
+        },
+    )
+
+    assert options.bili_cookie == "cookie-from-settings"
+    assert options.sessdata == "sessdata-from-values"
+
+
+def test_runtime_factory_wraps_legacy_sessdata_into_bili_cookie(tmp_path):
+    settings = _build_settings(tmp_path)
+    settings.sessdata = "legacy-sessdata"
+
+    options = build_runtime_options(
+        settings,
+        {
+            "source": "https://www.bilibili.com/video/BV1xx",
+        },
+    )
+
+    assert options.bili_cookie == "SESSDATA=legacy-sessdata"
+    assert options.sessdata == "legacy-sessdata"
+
+
+def test_runtime_factory_no_sessdata_disables_legacy_fallback(tmp_path):
+    settings = _build_settings(tmp_path)
+    settings.bili_cookie = None
+    settings.sessdata = "legacy-sessdata"
+
+    options = build_runtime_options(
+        settings,
+        {
+            "source": "https://www.bilibili.com/video/BV1xx",
+            "no_sessdata": True,
+        },
+    )
+
+    assert options.bili_cookie is None
+    assert options.sessdata == ""

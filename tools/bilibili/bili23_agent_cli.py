@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse, json, os, re, shutil, subprocess, sys, time, urllib.parse
+import argparse, json, os, random, re, shutil, subprocess, sys, time, urllib.parse
 from hashlib import md5
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,8 @@ AQ=[30251,30250,30280,30232,30216]
 CM={"auto":20,"avc":7,"h264":7,"hevc":12,"h265":12,"av1":13}
 AE={30251:"flac",30250:"ec3",30280:"m4a",30232:"m4a",30216:"m4a"}
 UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
+RF="https://www.bilibili.com/"
+HX="0123456789ABCDEF"
 
 class E(Exception):pass
 
@@ -35,12 +37,71 @@ def qpick(av:list[int],req:str,pri:list[int])->int:
     lo=[x for x in av if x<=t]
     return lo[0] if lo else av[0]
 
+def _parse_cookie_header(raw:str)->dict[str,str]:
+    raw=raw.strip()
+    if not raw:return {}
+    if raw.lower().startswith('cookie:'):
+        raw=raw.split(':',1)[1].strip()
+    cookies={}
+    for part in raw.split(';'):
+        if '=' not in part: continue
+        k,v=part.split('=',1)
+        k=k.strip()
+        if not k: continue
+        cookies[k]=v.strip()
+    return cookies
+
+def _rand_hex(length:int)->str:
+    return ''.join(random.choice(HX) for _ in range(length))
+
+def _generate_uuid_cookie(now:int)->str:
+    return f"{'-'.join(_rand_hex(length) for length in (8,4,4,4,12))}{str(now % 100000).ljust(5,'0')}infoc"
+
+def _generate_b_lsid(now:int)->str:
+    return f"{_rand_hex(8)}_{format(now,'X')}"
+
+def _fetch_spi_buvids(session:requests.Session)->dict[str,str]:
+    try:
+        data=session.get('https://api.bilibili.com/x/frontend/finger/spi',timeout=10).json()
+    except Exception:
+        return {}
+    if data.get('code',0)!=0:return {}
+    inner=data.get('data') or {}
+    ret={}
+    if inner.get('b_3'):ret['buvid3']=str(inner['b_3'])
+    if inner.get('b_4'):ret['buvid4']=str(inner['b_4'])
+    return ret
+
+def _build_cookie_values(cookie:str='',sessdata:str='',session:requests.Session|None=None)->dict[str,str]:
+    values=_parse_cookie_header(cookie)
+    if sessdata and 'SESSDATA' not in values:
+        values['SESSDATA']=sessdata
+    now=int(time.time())
+    values.setdefault('_uuid',_generate_uuid_cookie(now))
+    values.setdefault('b_lsid',_generate_b_lsid(now))
+    values.setdefault('b_nut',str(now))
+    values.setdefault('CURRENT_FNVAL','4048')
+    values.setdefault('CURRENT_QUALITY','0')
+    if session and ('buvid3' not in values or 'buvid4' not in values):
+        spi=_fetch_spi_buvids(session)
+        if 'buvid3' not in values and spi.get('buvid3'):
+            values['buvid3']=spi['buvid3']
+        if 'buvid4' not in values and spi.get('buvid4'):
+            values['buvid4']=spi['buvid4']
+    return values
+
+def _resolve_cookie_inputs(a:Any)->tuple[str,str]:
+    cookie=str(getattr(a,'bili_cookie','') or os.environ.get('VIVID_BILI_COOKIE','') or os.environ.get('BILI_COOKIE','') or os.environ.get('BILI_COOKIE_HEADER','')).strip()
+    sessdata=str(getattr(a,'sessdata','') or os.environ.get('BILI_SESSDATA','')).strip()
+    return cookie,sessdata
+
 class C:
-    def __init__(self,s=''):
-        self.s=requests.Session(); self.s.headers.update({'User-Agent':UA}); self.k=None
-        if s:self.s.cookies.set('SESSDATA',s)
+    def __init__(self,cookie:str='',sessdata:str=''):
+        self.s=requests.Session(); self.s.headers.update({'User-Agent':UA,'Referer':RF}); self.k=None
+        for k,v in _build_cookie_values(cookie,sessdata,self.s).items():
+            self.s.cookies.set(k,v,domain='.bilibili.com',path='/')
     def r(self,m,u,**kw):
-        h={'User-Agent':UA}; h.update(kw.pop('headers',{}) or {})
+        h={'User-Agent':UA,'Referer':RF}; h.update(kw.pop('headers',{}) or {})
         x=self.s.request(m,u,headers=h,timeout=20,**kw); x.raise_for_status(); return x
     def j(self,u,p=None,h=None,sig=False,path=None):
         p=p or {}
@@ -226,7 +287,8 @@ def meta(c:C,ctx:dict,e:dict,out:Path,bn:str,fmtx:str):
 
 
 def probe(a):
-    c=C(a.sessdata or os.environ.get('BILI_SESSDATA','')); x=parse_ctx(c,a.url); e=x['eps'][x['defi']]; d=play(c,e,0)
+    cookie,sessdata=_resolve_cookie_inputs(a)
+    c=C(cookie,sessdata); x=parse_ctx(c,a.url); e=x['eps'][x['defi']]; d=play(c,e,0)
     s={'source_type':x['stype'],'normalized_url':x['norm'],'episode_count':len(x['eps']),'default_episode':x['defi']+1,'episodes':[{'index':i+1,'title':k['title'],'cid':k['cid'],'ep_id':k['ep_id'],'duration_sec':k['dur']} for i,k in enumerate(x['eps'])]}
     t=stype(d); s['stream_type']=t
     if t=='DASH':
@@ -238,7 +300,8 @@ def probe(a):
     print(json.dumps(s,ensure_ascii=False,indent=2)); return 0
 
 def download(a):
-    c=C(a.sessdata or os.environ.get('BILI_SESSDATA','')); out=Path(a.output).resolve(); out.mkdir(parents=True,exist_ok=True); x=parse_ctx(c,a.url)
+    cookie,sessdata=_resolve_cookie_inputs(a)
+    c=C(cookie,sessdata); out=Path(a.output).resolve(); out.mkdir(parents=True,exist_ok=True); x=parse_ctx(c,a.url)
     sel=a.episode.strip().lower()
     if sel=='all': ids=list(range(len(x['eps'])))
     elif sel=='current': ids=[x['defi']]
@@ -299,7 +362,7 @@ def build():
     p=argparse.ArgumentParser(prog='bili23_agent_cli',description='Bili23-style downloader CLI for AI skill workflows')
     s=p.add_subparsers(dest='cmd',required=True)
     b=argparse.ArgumentParser(add_help=False)
-    b.add_argument('--url',required=True); b.add_argument('--sessdata',default='')
+    b.add_argument('--url',required=True); b.add_argument('--bili-cookie',default=''); b.add_argument('--sessdata',default='')
     pr=s.add_parser('probe',parents=[b]); pr.set_defaults(f=probe)
     d=s.add_parser('download',parents=[b])
     d.add_argument('--output',default='./download'); d.add_argument('--episode',default='current')

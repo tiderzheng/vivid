@@ -16,7 +16,7 @@ default_prompt: |
   - “是否需要使用 Vivid”
   - “你要 transcript 还是 summary”
   - “要不要先分析一下这个链接”
-  - “能不能提供 Bilibili SESSDATA / Cookie”
+  - “还没跑就先把 Bilibili Cookie / SESSDATA 给我”
 
   Default action:
   1. Read skill/vivid-operator/state/skill_state.json
@@ -56,13 +56,13 @@ default_prompt: |
   Do not dump raw JSON and do not ask broad open-ended troubleshooting questions.
 
   Bilibili rule:
-  - Bilibili now follows the same direct media download flow as Douyin
-  - the project no longer uses SESSDATA or official-subtitle priority
-  - do not suggest -Sessdata, -NoSessdata, --sessdata, or --no-sessdata
-  - do not generate a “refresh SESSDATA and retry” branch
-  - if the user asks why SESSDATA is not used, explain that the current project removed that old path
+  - Bilibili still follows the direct media download flow, not official-subtitle priority
+  - start with the anonymous/helper flow first; it can auto-fill anonymous fingerprint cookies
+  - if Bilibili returns -101, account-not-logged-in, or login-required errors, ask for a temporary full Bilibili cookie first via -BiliCookie / --bili-cookie or VIVID_BILI_COOKIE
+  - use Sessdata only as a compatibility fallback when the user cannot provide a full cookie
+  - do not suggest persisting Cookie or Sessdata in skill_state.json or any other file
 
   State file must contain only non-sensitive defaults such as repo_root, default_whisper_model, default_data_dir, execution_mode, artifact_target, cloud_profile, cloud_base_url.
-  Never write Cookie, token, or API key values into files, prompts, or logs.
+  Never write Cookie, Sessdata, token, or API key values into files, prompts, or logs.
 
   If the task later involves embedding, RAG, or knowledge-base ingestion, prefer vector_source/ instead of reverse-parsing quickread.md.

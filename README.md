@@ -377,6 +377,7 @@ Web UI 支持：
 - 设置采集策略，支持 `smart` 智能推荐
 - 设置转录后端 / OCR 后端
 - 选择或填写 OCR OpenAI 兼容 API 配置
+- 填写 Bilibili 完整 Cookie，或用 `SESSDATA` 做旧配置兼容
 - 保存默认 OCR API 配置
 - 查看任务进度、日志、历史任务
 - 在历史任务里批量选择并导出多个任务产物 zip
@@ -470,6 +471,8 @@ OCR 默认也由 **瞬知** 自己配置。
 如需使用自定义下载器，可通过环境变量覆盖：
 
 - `VIVID_BILI_SCRIPT` - 自定义Bilibili下载器路径
+- `VIVID_BILI_COOKIE` - Bilibili 完整 Cookie（推荐，登录态优先）
+- `BILI_SESSDATA` - 兼容旧配置的 SESSDATA 回退值
 - `VIVID_DOUYIN_SCRIPT` - 自定义Douyin下载器路径
 
 ## skill 怎么理解

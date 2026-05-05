@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..models.calibration import CalibrationResult
 from ..models.summary import SummaryResult
 from ..models.transcript import TranscriptResult
 
@@ -74,10 +75,28 @@ def summary_from_payload(payload: dict[str, Any]) -> SummaryResult:
     )
 
 
+def calibration_to_payload(calibration: CalibrationResult) -> dict[str, Any]:
+    return calibration.to_payload()
+
+
+def calibration_from_payload(payload: dict[str, Any]) -> CalibrationResult:
+    return CalibrationResult(
+        cn_text=str(payload.get("cn_text") or ""),
+        en_text=str(payload.get("en_text") or ""),
+        provider=str(payload.get("provider") or "checkpoint"),
+    )
+
+
 def _payload_has_summary(summary: dict[str, Any] | None) -> bool:
     if not isinstance(summary, dict):
         return False
     return bool(_text_or_none(summary.get("overview")) or _text_or_none(summary.get("detailed")) or _text_or_none(summary.get("title")) or _text_or_none(summary.get("one_line")))
+
+
+def _payload_has_calibration(calibration: dict[str, Any] | None) -> bool:
+    if not isinstance(calibration, dict):
+        return False
+    return bool(_text_or_none(calibration.get("cn_text")) or _text_or_none(calibration.get("en_text")))
 
 
 def available_resume_stages(payload: dict[str, Any]) -> list[str]:
@@ -85,12 +104,20 @@ def available_resume_stages(payload: dict[str, Any]) -> list[str]:
     media_path = _coerce_path(payload.get("media_path"))
     transcript = payload.get("transcript")
     summary = payload.get("summary")
+    calibration = payload.get("calibration")
     rendered = payload.get("rendered")
     if media_path and media_path.exists():
         stages.append("transcription")
     if isinstance(transcript, dict) and transcript.get("text"):
         stages.append("summarize")
     if isinstance(transcript, dict) and transcript.get("text") and _payload_has_summary(summary):
+        stages.append("calibrate")
+    if (
+        isinstance(transcript, dict)
+        and transcript.get("text")
+        and _payload_has_summary(summary)
+        and _payload_has_calibration(calibration)
+    ):
         stages.append("render")
     if (
         isinstance(transcript, dict)
@@ -106,6 +133,8 @@ def suggested_resume_stage(payload: dict[str, Any], failed_stage: str | None = N
     stages = available_resume_stages(payload)
     if failed_stage in {"summarize", "summary_provider", "summary_provider_completed", "summarize_completed"} and "summarize" in stages:
         return "summarize"
+    if failed_stage in {"calibrate", "calibration_provider", "calibration_provider_completed", "calibrate_completed"} and "calibrate" in stages:
+        return "calibrate"
     if failed_stage in {"render", "artifacts"}:
         if failed_stage == "render" and "render" in stages:
             return "render"

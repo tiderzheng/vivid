@@ -96,7 +96,8 @@ def test_web_index_renders(tmp_path, monkeypatch):
     assert "Whisper 模型" in response.text
     assert "历史任务" in response.text
     assert "批量 URL" in response.text
-    assert "Bilibili SESSDATA" not in response.text
+    assert 'name="bili_cookie"' in response.text
+    assert 'name="sessdata"' in response.text
 
 
 def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
@@ -122,6 +123,7 @@ def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
     assert payload["defaults"]["data_dir"] == str(settings.data_dir)
     assert "sessdata" not in payload["defaults"]
     assert "no_sessdata" not in payload["defaults"]
+    assert "bili_cookie" not in payload["defaults"]
 
 
 def test_web_default_output_dir_can_be_saved(tmp_path, monkeypatch):
@@ -297,8 +299,11 @@ def test_web_quickread_returns_vector_source_files(tmp_path, monkeypatch):
                 vector_document_json=file_map["vector_document_json"],
                 vector_chunks_jsonl=file_map["vector_chunks_jsonl"],
                 vector_manifest_json=file_map["vector_manifest_json"],
+                calibrated_cn_markdown=None,
+                calibrated_en_markdown=None,
             ),
             rendered="rendered",
+            calibration=None,
         ),
     )
 
@@ -326,7 +331,7 @@ def test_web_quickread_returns_vector_source_files(tmp_path, monkeypatch):
     assert payload["files"]["vector_manifest_json"].endswith("manifest.json")
 
 
-def test_web_quickread_omits_removed_sessdata_controls(tmp_path, monkeypatch):
+def test_web_quickread_collects_legacy_sessdata_without_echoing_it(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
@@ -359,12 +364,60 @@ def test_web_quickread_omits_removed_sessdata_controls(tmp_path, monkeypatch):
     client = TestClient(app)
     response = client.post(
         "/api/quickread",
-        data={"source_url": "https://www.bilibili.com/video/BV1xx"},
+        data={
+            "source_url": "https://www.bilibili.com/video/BV1xx",
+            "sessdata": "fresh-cookie",
+        },
     )
 
     assert response.status_code == 200
-    assert "sessdata" not in captured["values"]
+    assert captured["values"]["sessdata"] == "fresh-cookie"
     assert "no_sessdata" not in captured["values"]
+    assert "fresh-cookie" not in response.text
+
+
+def test_web_quickread_collects_bili_cookie_without_echoing_it(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr("app.web.build_runtime_options", fake_build_runtime_options)
+    monkeypatch.setattr(
+        "app.web.run_quickread",
+        lambda _options: OrchestratorResult(
+            source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=ArtifactBundle(
+                workdir=settings.data_dir / "demo",
+                artifacts_dir=settings.data_dir / "demo" / "artifacts",
+                quickread_markdown=settings.data_dir / "demo" / "artifacts" / "quickread.md",
+                transcript_text=settings.data_dir / "demo" / "artifacts" / "transcript.txt",
+                summary_markdown=settings.data_dir / "demo" / "artifacts" / "summary.md",
+                summary_json=settings.data_dir / "demo" / "artifacts" / "summary.json",
+                metadata_json=settings.data_dir / "demo" / "artifacts" / "metadata.json",
+            ),
+            rendered="rendered",
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/quickread",
+        data={
+            "source_url": "https://www.bilibili.com/video/BV1xx",
+            "bili_cookie": "SESSDATA=demo; bili_jct=token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert "bili_cookie" not in response.text
 
 
 def test_web_quickread_treats_bili_sessdata_errors_as_generic_failures(tmp_path, monkeypatch):
@@ -387,7 +440,7 @@ def test_web_quickread_treats_bili_sessdata_errors_as_generic_failures(tmp_path,
     assert "error_code" not in payload
 
 
-def test_web_jobs_request_omits_removed_sessdata_controls(tmp_path, monkeypatch):
+def test_web_jobs_request_omits_sessdata_from_history(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
@@ -417,17 +470,60 @@ def test_web_jobs_request_omits_removed_sessdata_controls(tmp_path, monkeypatch)
         data={
             "source_url": "https://www.bilibili.com/video/BV1xx",
             "sessdata": "fresh-cookie",
-            "no_sessdata": "true",
         },
     )
 
     assert response.status_code == 200
     job = response.json()["job"]
     assert "sessdata" not in job["request"]
-    assert "no_sessdata" not in job["request"]
 
 
-def test_web_retry_job_ignores_removed_sessdata_overrides(tmp_path, monkeypatch):
+def test_web_jobs_request_omits_bili_cookie_from_history(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr("app.web.build_runtime_options", fake_build_runtime_options)
+    monkeypatch.setattr(
+        "app.web._invoke_run_quickread",
+        lambda *_args, **_kwargs: OrchestratorResult(
+            source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=ArtifactBundle(
+                workdir=settings.data_dir / "demo",
+                artifacts_dir=settings.data_dir / "demo" / "artifacts",
+                quickread_markdown=settings.data_dir / "demo" / "artifacts" / "quickread.md",
+                transcript_text=settings.data_dir / "demo" / "artifacts" / "transcript.txt",
+                summary_markdown=settings.data_dir / "demo" / "artifacts" / "summary.md",
+                summary_json=settings.data_dir / "demo" / "artifacts" / "summary.json",
+                metadata_json=settings.data_dir / "demo" / "artifacts" / "metadata.json",
+            ),
+            rendered="rendered",
+        ),
+    )
+
+    client = TestClient(app)
+    response = client.post(
+        "/api/jobs",
+        data={
+            "source_url": "https://www.bilibili.com/video/BV1xx",
+            "bili_cookie": "SESSDATA=demo; bili_jct=token",
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    job = response.json()["job"]
+    assert "bili_cookie" not in job["request"]
+
+
+def test_web_retry_job_forwards_auth_overrides(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
@@ -444,12 +540,20 @@ def test_web_retry_job_ignores_removed_sessdata_overrides(tmp_path, monkeypatch)
 
     response = client.post(
         "/api/jobs/job-1/retry",
-        data={"sessdata": "fresh-cookie", "no_sessdata": "false"},
+        data={
+            "sessdata": "fresh-cookie",
+            "bili_cookie": "SESSDATA=demo; bili_jct=token",
+            "no_sessdata": "true",
+        },
     )
 
     assert response.status_code == 200
     assert captured["job_id"] == "job-1"
-    assert captured["overrides"] == {}
+    assert captured["overrides"] == {
+        "sessdata": "fresh-cookie",
+        "bili_cookie": "SESSDATA=demo; bili_jct=token",
+        "no_sessdata": True,
+    }
 
 
 def test_web_quickread_requires_source(tmp_path, monkeypatch):

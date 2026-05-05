@@ -1,3 +1,4 @@
+import importlib.util
 from pathlib import Path
 import subprocess
 
@@ -7,12 +8,22 @@ from app.adapters.ytdlp import YtDlpAdapter, _extra_args_to_options
 from app.exceptions import VividError
 
 
-def test_bilibili_adapter_calls_helper_for_media_without_sessdata_flag(tmp_path, monkeypatch):
+def _load_bilibili_helper():
+    helper_path = Path(__file__).resolve().parents[1] / "tools" / "bilibili" / "bili23_agent_cli.py"
+    spec = importlib.util.spec_from_file_location("bili23_agent_cli", helper_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_bilibili_adapter_calls_helper_for_media_without_helper_cli_flags(tmp_path, monkeypatch):
     captured = {}
     target = tmp_path / "media" / "bilibili" / "video.mp4"
     helper = tmp_path / "bili.py"
     helper.write_text("# helper", encoding="utf-8")
     monkeypatch.setattr("app.adapters.bilibili.shutil.which", lambda name: "C:/ffmpeg/bin/ffmpeg.exe")
+    monkeypatch.setenv("VIVID_BILI_COOKIE", "SESSDATA=stale-cookie; buvid3=stale")
     monkeypatch.setenv("BILI_SESSDATA", "stale-cookie")
 
     def fake_run(command, cwd=None, retries=1, env=None):
@@ -25,7 +36,13 @@ def test_bilibili_adapter_calls_helper_for_media_without_sessdata_flag(tmp_path,
     monkeypatch.setattr("app.adapters.bilibili.run_command", fake_run)
 
     adapter = BilibiliAdapter(helper)
-    result = adapter.download_media("https://www.bilibili.com/video/BV1x", tmp_path, "ffmpeg")
+    result = adapter.download_media(
+        "https://www.bilibili.com/video/BV1x",
+        tmp_path,
+        "ffmpeg",
+        bili_cookie="SESSDATA=fresh-cookie; buvid3=abc",
+        sessdata="legacy-cookie",
+    )
 
     assert result == target
     assert "python" in Path(captured["command"][0]).name.lower()
@@ -35,13 +52,17 @@ def test_bilibili_adapter_calls_helper_for_media_without_sessdata_flag(tmp_path,
     assert "--ffmpeg" in captured["command"]
     assert "--sessdata" not in captured["command"]
     assert captured["env"] is not None
-    assert "BILI_SESSDATA" not in captured["env"]
+    assert captured["env"]["VIVID_BILI_COOKIE"] == "SESSDATA=fresh-cookie; buvid3=abc"
+    assert captured["env"]["BILI_SESSDATA"] == "legacy-cookie"
+    assert "BILI_COOKIE" not in captured["env"]
+    assert "BILI_COOKIE_HEADER" not in captured["env"]
 
 
-def test_bilibili_adapter_reads_title_from_probe_episodes_without_sessdata_flag(tmp_path, monkeypatch):
+def test_bilibili_adapter_reads_title_from_probe_episodes_without_helper_cli_flags(tmp_path, monkeypatch):
     helper = tmp_path / "bili.py"
     helper.write_text("# helper", encoding="utf-8")
     captured = {}
+    monkeypatch.setenv("VIVID_BILI_COOKIE", "SESSDATA=stale-cookie; buvid3=stale")
     monkeypatch.setenv("BILI_SESSDATA", "stale-cookie")
 
     class DummyResult:
@@ -68,12 +89,100 @@ def test_bilibili_adapter_reads_title_from_probe_episodes_without_sessdata_flag(
     monkeypatch.setattr("app.adapters.bilibili.subprocess.run", fake_run)
 
     adapter = BilibiliAdapter(helper)
-    result = adapter.get_video_title("https://www.bilibili.com/video/BV1x")
+    result = adapter.get_video_title(
+        "https://www.bilibili.com/video/BV1x",
+        bili_cookie="SESSDATA=fresh-cookie; buvid3=abc",
+        sessdata="legacy-cookie",
+    )
 
     assert result == "第二P"
     assert "--sessdata" not in captured["command"]
     assert captured["env"] is not None
-    assert "BILI_SESSDATA" not in captured["env"]
+    assert captured["env"]["VIVID_BILI_COOKIE"] == "SESSDATA=fresh-cookie; buvid3=abc"
+    assert captured["env"]["BILI_SESSDATA"] == "legacy-cookie"
+
+
+def test_bilibili_helper_prefers_full_cookie_and_fills_missing_fields(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
+    monkeypatch.setattr(helper, "_fetch_spi_buvids", lambda _session: {"buvid4": "from-spi"})
+
+    cookies = helper._build_cookie_values(
+        "SESSDATA=full-cookie; buvid3=from-cookie; foo=bar",
+        "legacy-sessdata",
+        helper.requests.Session(),
+    )
+
+    assert cookies["SESSDATA"] == "full-cookie"
+    assert cookies["buvid3"] == "from-cookie"
+    assert cookies["buvid4"] == "from-spi"
+    assert cookies["foo"] == "bar"
+    assert cookies["_uuid"].endswith("00000infoc")
+    assert cookies["b_lsid"].endswith("_6553F100")
+    assert cookies["b_nut"] == "1700000000"
+    assert cookies["CURRENT_FNVAL"] == "4048"
+    assert cookies["CURRENT_QUALITY"] == "0"
+
+
+def test_bilibili_helper_uses_sessdata_when_full_cookie_missing(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
+    monkeypatch.setattr(
+        helper,
+        "_fetch_spi_buvids",
+        lambda _session: {"buvid3": "spi-buvid3", "buvid4": "spi-buvid4"},
+    )
+
+    cookies = helper._build_cookie_values("", "legacy-sessdata", helper.requests.Session())
+
+    assert cookies["SESSDATA"] == "legacy-sessdata"
+    assert cookies["_uuid"].endswith("00000infoc")
+    assert cookies["b_lsid"].endswith("_6553F100")
+    assert cookies["b_nut"] == "1700000000"
+    assert cookies["buvid3"] == "spi-buvid3"
+    assert cookies["buvid4"] == "spi-buvid4"
+
+
+def test_bilibili_helper_generates_anonymous_fingerprint_without_auth(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
+    monkeypatch.setattr(
+        helper,
+        "_fetch_spi_buvids",
+        lambda _session: {"buvid3": "spi-buvid3", "buvid4": "spi-buvid4"},
+    )
+
+    cookies = helper._build_cookie_values("", "", helper.requests.Session())
+
+    assert "SESSDATA" not in cookies
+    assert cookies["_uuid"].endswith("00000infoc")
+    assert cookies["b_lsid"].endswith("_6553F100")
+    assert cookies["b_nut"] == "1700000000"
+    assert cookies["CURRENT_FNVAL"] == "4048"
+    assert cookies["CURRENT_QUALITY"] == "0"
+    assert cookies["buvid3"] == "spi-buvid3"
+    assert cookies["buvid4"] == "spi-buvid4"
+
+
+def test_bilibili_helper_resolves_cookie_from_new_flag_and_env(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setenv("VIVID_BILI_COOKIE", "SESSDATA=env-cookie")
+    monkeypatch.setenv("BILI_SESSDATA", "env-sessdata")
+
+    args = helper.build().parse_args(
+        [
+            "probe",
+            "--url",
+            "https://www.bilibili.com/video/BV1x",
+            "--bili-cookie",
+            "SESSDATA=cli-cookie; bili_jct=token",
+        ]
+    )
+
+    cookie, sessdata = helper._resolve_cookie_inputs(args)
+
+    assert cookie == "SESSDATA=cli-cookie; bili_jct=token"
+    assert sessdata == "env-sessdata"
 
 
 def test_douyin_adapter_calls_helper(tmp_path, monkeypatch):

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from ..models.calibration import CalibrationResult
 from ..models.source import SourceInfo
 from ..models.summary import SummaryResult
 from ..models.transcript import TranscriptResult
 
 
-def render_quickread(source: SourceInfo, transcript: TranscriptResult, summary: SummaryResult, output_format: str) -> str:
+def render_quickread(source: SourceInfo, transcript: TranscriptResult, summary: SummaryResult, output_format: str, calibration: CalibrationResult | None = None) -> str:
     lines = [
         "========================================",
         "🎬 视频速看完成",
@@ -47,5 +48,24 @@ def render_quickread(source: SourceInfo, transcript: TranscriptResult, summary: 
                 "",
             ]
         )
+    if calibration is not None:
+        lines.extend(
+            [
+                "",
+                "---------- 📝 AI 校准文本（中文） ----------",
+                "",
+                calibration.cn_text or "[空]",
+                "",
+            ]
+        )
+        if calibration.en_text:
+            lines.extend(
+                [
+                    "---------- 📝 Calibrated Text (English) ----------",
+                    "",
+                    calibration.en_text or "[空]",
+                    "",
+                ]
+            )
     lines.append("========================================")
     return "\n".join(lines).strip() + "\n"

@@ -26,6 +26,12 @@
 # 执行速看
 ./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "视频链接或本地路径"
 
+# Bilibili 登录失败时，优先临时传完整 Cookie
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "https://www.bilibili.com/video/BV..." -BiliCookie "SESSDATA=...; bili_jct=...; DedeUserID=..."
+
+# 只有拿不到完整 Cookie 时，再兼容旧的 SESSDATA
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "https://www.bilibili.com/video/BV..." -Sessdata "..."
+
 # 启动 Web UI
 ./skill/vivid-operator/scripts/vivid_operator.ps1 -Action web-ui
 ```
@@ -95,10 +101,13 @@
 
 ### Bilibili 规则
 
-- 当前项目已移除 `Bilibili` 的 `SESSDATA` 和官方字幕优先逻辑
-- `Bilibili` 现在和 `Douyin` 一样：直接下载媒体，再由 `Whisper / OCR` 处理
-- agent 不应要求用户提供 `SESSDATA`
-- agent 不应建议 `--sessdata`、`--no-sessdata`
+- `Bilibili` 仍然按“直接下载媒体 -> Whisper / OCR”处理，不恢复官方字幕优先
+- helper 会先尝试完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名指纹 `Cookie`
+- agent 不应在首次尝试前就要求用户提供 `Cookie / SESSDATA`
+- 只有在出现 `-101`、`账号未登录`、`login required` 之类登录错误后，才应让用户本次临时提供完整 `Cookie`
+- 优先建议 `-BiliCookie` / `--bili-cookie` 或 `VIVID_BILI_COOKIE`
+- 只有拿不到完整 `Cookie` 时，才兼容 `-Sessdata` / `--sessdata`
+- 不要建议把 `Cookie / SESSDATA` 持久化到 `skill_state.json` 或其他文件
 
 ### 云端模式
 
