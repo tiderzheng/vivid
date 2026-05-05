@@ -119,13 +119,14 @@ Linux/macOS:
 
 - `Bilibili` 仍然走“直接下载媒体 -> Whisper / OCR”链路，不恢复官方字幕优先
 - helper 现在支持三层策略：完整 `Cookie` 优先，`SESSDATA` 兼容回退，无凭据时自动补匿名请求画像
+- Vivid 支持二维码登录：`bili-auth-qrcode` 生成二维码，`bili-auth-poll -QrcodeKey ...` 轮询并持久化登录态，`bili-auth-status` 校验，`bili-auth-logout` 注销并清除本地 secret
 - 匿名请求画像包括 `_uuid`、`b_lsid`、`b_nut`、`buvid3`、`buvid4`、`buvid_fp`，由 helper 按 `Bili23` 规则维护；即使完整 `Cookie` 里带了这些旧值，helper 也会刷新覆盖
 - helper 会先写入基础登录态，再获取/刷新匿名画像、尽量获取 `bili_ticket` 与调用 `ExClimbWuzhi` 激活
 - `bili_ticket` / `ExClimbWuzhi` 获取失败不等于需要登录；除非错误明确指向登录失败，不要因此要求用户提供 `Cookie`
 - 支持常见 `Bilibili` 链接形态：`BV`、`av`、`ep`、`ss`、`md`
 - 在首次尝试前，不要要求用户先提供 `Cookie / SESSDATA`
-- 只有当错误明确指向 `-101`、`账号未登录`、`login required` 之类的登录失败时，才引导用户显式提供凭据
-- 发生登录失败时，优先要 `Bilibili` 完整 `Cookie`，使用 `-BiliCookie` / `--bili-cookie` 或 `VIVID_BILI_COOKIE`
+- 只有当错误明确指向 `-101`、`账号未登录`、`login required` 之类的登录失败时，才引导用户刷新凭据
+- 发生登录失败时，优先让用户走二维码登录；不方便扫码时再要 `Bilibili` 完整 `Cookie`，使用 `-BiliCookie` / `--bili-cookie` 或 `VIVID_BILI_COOKIE`
 - 用户通过 `-BiliCookie` / `--bili-cookie` 或 Web 表单显式提供完整 `Cookie` 时，Vivid 应用层会持久化到项目目录 `configs/secrets/bilibili_cookie.json`；该文件不属于 skill 状态，不要复制、展示或写入对话
 - 只有拿不到完整 `Cookie` 时，才兼容 `-Sessdata` / `--sessdata` 或 `BILI_SESSDATA`
 - `-NoSessdata` / `--no-sessdata` 只在用户明确要禁用回退时才提，不要默认建议
@@ -144,7 +145,7 @@ Linux/macOS:
 | 上一轮已给链接，这一轮说“继续” | 复用已有 `source` 执行 | 重新盘问视频来源 |
 | `用瞬知看下这个 /path/to/demo.wav` | 直接执行 `quickread` | 先解释功能 |
 | `走云端处理这个 https://...` 且没配置云端地址 | 只问远端 API 地址和产物策略 | 先追问一堆可选参数 |
-| `Bilibili` 返回 `-101: 账号未登录` | 让用户显式提供完整 `Cookie` 重试；拿不到时再兼容 `SESSDATA` | 继续空跑，或让用户把凭据写进状态文件 |
+| `Bilibili` 返回 `-101: 账号未登录` | 先引导二维码登录并校验；不方便扫码时再要完整 `Cookie`，最后才兼容 `SESSDATA` | 继续空跑，或让用户把凭据写进状态文件 |
 | 两个链接 + “都看一下” | 逐个执行并分别返回结果 | 问“你到底想处理哪个” |
 | 两个链接但没说是否都处理 | 问“都处理还是只处理一个？” | 擅自忽略其中一个 |
 

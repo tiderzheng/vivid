@@ -98,6 +98,21 @@ def test_web_index_renders(tmp_path, monkeypatch):
     assert "批量 URL" in response.text
     assert 'name="bili_cookie"' in response.text
     assert 'name="sessdata"' in response.text
+    assert "扫码登录 Bilibili" in response.text
+    assert "/api/bilibili/auth/qrcode" in response.text
+
+
+def test_web_index_keeps_multiline_url_split_regex_escaped(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    client = TestClient(app)
+
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert r"text.split(/\r?\n/)" in response.text
+    assert "text.split(/\r?\n/)" not in response.text
 
 
 def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
@@ -451,6 +466,101 @@ def test_web_quickread_treats_bili_sessdata_errors_as_generic_failures(tmp_path,
     assert payload["ok"] is False
     assert "api error -101: 账号未登录" in payload["error"]
     assert "error_code" not in payload
+
+
+def test_web_bili_auth_qrcode_endpoint_returns_public_payload(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    class FakeQrCode:
+        def to_public_dict(self):
+            return {
+                "qrcode_key": "abc",
+                "url": "https://passport.bilibili.com/login?qrcode_key=abc",
+                "status": "waiting_for_scan",
+            }
+
+    monkeypatch.setattr("app.web.generate_bili_qrcode", lambda: FakeQrCode())
+    client = TestClient(app)
+
+    response = client.post("/api/bilibili/auth/qrcode")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["qrcode"]["qrcode_key"] == "abc"
+    assert "SESSDATA" not in response.text
+
+
+def test_web_bili_auth_poll_endpoint_handles_pending(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    from app.services.bili_auth import BiliQrCodePending
+
+    monkeypatch.setattr(
+        "app.web.poll_bili_qrcode",
+        lambda repo_root, qrcode_key: (_ for _ in ()).throw(BiliQrCodePending("waiting for scan")),
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/bilibili/auth/poll", params={"qrcode_key": "abc"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": False,
+        "status": "waiting_for_scan",
+        "message": "waiting for scan",
+    }
+
+
+def test_web_bili_auth_status_endpoint_does_not_expose_cookie(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    class FakeStatus:
+        def to_public_dict(self):
+            return {
+                "is_login": True,
+                "cookie_present": True,
+                "uname": "tester",
+                "mid": 42,
+            }
+
+    monkeypatch.setattr("app.web.get_bili_login_status", lambda repo_root: FakeStatus())
+    client = TestClient(app)
+
+    response = client.get("/api/bilibili/auth/status")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["status"]["is_login"] is True
+    assert "SESSDATA" not in response.text
+
+
+def test_web_bili_auth_logout_endpoint_returns_clear_result(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    class FakeLogout:
+        def to_public_dict(self):
+            return {"ok": True, "cleared": True, "message": "ok"}
+
+    monkeypatch.setattr("app.web.logout_bili", lambda repo_root: FakeLogout())
+    client = TestClient(app)
+
+    response = client.post("/api/bilibili/auth/logout")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "logout": {"ok": True, "cleared": True, "message": "ok"},
+    }
 
 
 def test_web_jobs_request_omits_sessdata_from_history(tmp_path, monkeypatch):
@@ -851,7 +961,7 @@ def test_web_queue_progress_and_cancel(tmp_path, monkeypatch):
 
     assert queued_job is not None
     assert queued_job["status"] == "queued"
-    assert queued_job["queue_position"] == 1
+    assert queued_job["queue_position"] == 2
     assert queued_job["can_cancel"] is True
     assert queued_job["progress"] == 5
 
@@ -865,6 +975,21 @@ def test_web_queue_progress_and_cancel(tmp_path, monkeypatch):
     assert bootstrap_response.status_code == 200
     stats = bootstrap_response.json()["stats"]
     assert stats["cancelled"] >= 1
+
+
+def test_web_job_manager_defaults_to_single_worker(tmp_path):
+    manager = __import__("app.web", fromlist=["WebJobManager"]).WebJobManager(tmp_path / "jobs.json")
+
+    assert manager.executor._max_workers == 1
+
+
+def test_web_job_manager_accepts_configured_worker_count(tmp_path):
+    manager = __import__("app.web", fromlist=["WebJobManager"]).WebJobManager(
+        tmp_path / "jobs.json",
+        max_workers=3,
+    )
+
+    assert manager.executor._max_workers == 3
 
 
 def test_web_job_events_stream(tmp_path, monkeypatch):

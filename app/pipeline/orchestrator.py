@@ -17,6 +17,7 @@ from ..services.diagnostics import build_diagnostic_event, build_error_summary, 
 from ..services.artifact_writer import save_artifacts
 from ..services.pathing import make_staging_workdir, move_to_final_workdir, relocate_path
 from ..services.project_naming import derive_title, infer_video_title, sanitize_name
+from ..services.quickread_lock import QuickreadLock
 from ..services.run_state import (
     calibration_from_payload,
     calibration_to_payload,
@@ -86,6 +87,14 @@ class OrchestratorResult:
 
 
 def run_quickread(
+    options: RuntimeOptions,
+    event_callback: QuickreadEventCallback | None = None,
+) -> OrchestratorResult:
+    with QuickreadLock(options.data_dir, options.source):
+        return _run_quickread_unlocked(options, event_callback=event_callback)
+
+
+def _run_quickread_unlocked(
     options: RuntimeOptions,
     event_callback: QuickreadEventCallback | None = None,
 ) -> OrchestratorResult:

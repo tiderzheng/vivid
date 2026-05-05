@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("doctor", "quickread", "paths", "web-ui")]
+    [ValidateSet("doctor", "quickread", "paths", "web-ui", "bili-auth-qrcode", "bili-auth-poll", "bili-auth-status", "bili-auth-logout")]
     [string]$Action,
     [string]$Source,
     [string]$ProjectName,
@@ -16,6 +16,7 @@ param(
     [string]$CloudBaseUrl,
     [string]$Sessdata,
     [string]$BiliCookie,
+    [string]$QrcodeKey,
     [switch]$NoSessdata,
     [string]$VividRoot
 )
@@ -209,7 +210,14 @@ $invokeArgs = @{
 if ($Source) { $invokeArgs.Source = $Source }
 if ($ProjectName) { $invokeArgs.ProjectName = $ProjectName }
 if ($Format) { $invokeArgs.Format = $Format }
-    if ($Action -eq "quickread") {
+if ($Action -eq "bili-auth-poll") {
+    if (-not $QrcodeKey) {
+        Write-Host "Error: -QrcodeKey is required for bili-auth-poll." -ForegroundColor Red
+        exit 2
+    }
+    $invokeArgs.QrcodeKey = $QrcodeKey
+}
+if ($Action -eq "quickread") {
     if (-not $ExecutionMode -and -not $env:VIVID_EXECUTION_MODE) {
         $cachedExecutionMode = Get-StateValue "execution_mode"
         if ($cachedExecutionMode) {

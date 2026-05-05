@@ -360,6 +360,17 @@ python -m app.cli "<url>" --resume-workdir "data/项目名" --resume-stage calib
 | `EYES_API` | `http://127.0.0.1:9531` | OCR API 地址 |
 | `VIVID_CALIBRATION_PROMPTS_FILE` | `./configs/calibration/prompts.json` | 校准提示词文件 |
 
+### Bilibili 登录态服务
+
+`app/services/bili_auth.py` 负责二维码登录、登录态校验和注销清除：
+
+1. `generate_bili_qrcode()` 调用 Bilibili 二维码生成接口，返回 `qrcode_key`、扫码 URL 和可选 SVG。
+2. `poll_bili_qrcode(repo_root, qrcode_key)` 轮询扫码状态。成功时只保存 `SESSDATA`、`bili_jct`、`DedeUserID`、`DedeUserID__ckMd5` 到 `configs/secrets/bilibili_cookie.json`，公开响应只报告状态和 `saved`。
+3. `get_bili_login_status(repo_root)` 调用 `/x/web-interface/nav`，返回 `is_login`、`uname`、`mid` 等公开字段；`-101` 会被视为本地登录态失效。
+4. `logout_bili(repo_root)` 使用 `bili_jct` 调用注销接口，并清除项目本地 secret 文件。
+
+下载请求画像和 Bilibili API 兼容规则仍由 `tools/bilibili/bili23_agent_cli.py` 负责；登录生命周期由服务层负责，二者不要混在 adapter 里。
+
 ---
 
 ## Web UI 接口说明
@@ -381,6 +392,10 @@ python -m app.cli "<url>" --resume-workdir "data/项目名" --resume-stage calib
 | `/api/jobs/{job_id}` | DELETE | 删除任务（可选删除文件） |
 | `/api/jobs/export` | POST | 批量导出任务为 ZIP |
 | `/api/quickread` | POST | 同步快速执行（单源） |
+| `/api/bilibili/auth/qrcode` | POST | 生成 Bilibili 登录二维码 |
+| `/api/bilibili/auth/poll` | GET | 轮询二维码登录状态 |
+| `/api/bilibili/auth/status` | GET | 校验本地 Bilibili 登录态 |
+| `/api/bilibili/auth/logout` | POST | 注销并清除本地 Bilibili 登录态 |
 | `/files` | GET | 下载产物文件 |
 | `/api/open-folder` | POST | 在文件管理器中打开目录 |
 | `/api/preferences/output-dir` | POST | 保存默认输出目录 |

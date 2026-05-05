@@ -11,8 +11,17 @@ from typing import Any
 from .config import Settings, load_settings
 from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
-from .services.cloud_bridge import CloudQuickreadError, run_cloud_quickread
+from .services.bili_auth import (
+    BiliQrCodeExpiredError,
+    BiliQrCodePending,
+    BiliQrCodeWaitingForConfirmation,
+    generate_bili_qrcode,
+    get_bili_login_status,
+    logout_bili,
+    poll_bili_qrcode,
+)
 from .services.bili_cookie_store import save_bili_cookie
+from .services.cloud_bridge import CloudQuickreadError, run_cloud_quickread
 from .services.dependency_bootstrap import ensure_opencv_dependency
 from .services.ffmpeg_locator import inspect_ffmpeg
 from .subsystems.transcription import TranscriptionPreset, load_transcription_store
@@ -31,6 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser = subparsers.add_parser("web-ui")
     web_parser.add_argument("-UiHost", "--host", default="127.0.0.1")
     web_parser.add_argument("-Port", "--port", type=int, default=8765)
+
+    subparsers.add_parser("bili-auth-qrcode")
+    bili_poll = subparsers.add_parser("bili-auth-poll")
+    bili_poll.add_argument("-QrcodeKey", "--qrcode-key", required=True)
+    subparsers.add_parser("bili-auth-status")
+    subparsers.add_parser("bili-auth-logout")
 
     quickread = subparsers.add_parser("quickread")
     quickread.add_argument("-Source", "--source", required=True)
@@ -133,6 +148,8 @@ def main() -> int:
         return 0
     if args.action == "quickread":
         return _run_quickread(args, settings)
+    if args.action.startswith("bili-auth-"):
+        return _handle_bili_auth_action(args, settings)
     if args.action.startswith("vision-"):
         return _handle_vision_action(args, settings)
     if args.action.startswith("transcription-"):
@@ -414,6 +431,42 @@ def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
         payload = _quickread_payload(args, None, str(exc), False)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 1
+
+
+def _handle_bili_auth_action(args: argparse.Namespace, settings: Settings) -> int:
+    try:
+        if args.action == "bili-auth-qrcode":
+            qrcode = generate_bili_qrcode()
+            print(json.dumps({"action": args.action, "ok": True, "qrcode": qrcode.to_public_dict()}, ensure_ascii=False, indent=2))
+            return 0
+        if args.action == "bili-auth-poll":
+            result = poll_bili_qrcode(settings.repo_root, args.qrcode_key)
+            print(json.dumps({"action": args.action, "ok": True, **result.to_public_dict()}, ensure_ascii=False, indent=2))
+            return 0
+        if args.action == "bili-auth-status":
+            status = get_bili_login_status(settings.repo_root)
+            print(json.dumps({"action": args.action, "ok": True, "status": status.to_public_dict()}, ensure_ascii=False, indent=2))
+            return 0
+        if args.action == "bili-auth-logout":
+            result = logout_bili(settings.repo_root)
+            logout_payload = result.to_public_dict()
+            payload = {"action": args.action, "ok": bool(logout_payload.get("ok")), "logout": logout_payload}
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0 if payload["ok"] else 1
+    except BiliQrCodePending as exc:
+        print(json.dumps({"action": args.action, "ok": False, "status": "waiting_for_scan", "message": str(exc)}, ensure_ascii=False, indent=2))
+        return 0
+    except BiliQrCodeWaitingForConfirmation as exc:
+        print(json.dumps({"action": args.action, "ok": False, "status": "waiting_for_confirmation", "message": str(exc)}, ensure_ascii=False, indent=2))
+        return 0
+    except BiliQrCodeExpiredError as exc:
+        print(json.dumps({"action": args.action, "ok": False, "status": "expired", "message": str(exc)}, ensure_ascii=False, indent=2))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(json.dumps({"action": args.action, "ok": False, "error": str(exc)}, ensure_ascii=False, indent=2))
+        return 1
+    print(json.dumps({"action": args.action, "ok": False, "error": f"unsupported action: {args.action}"}, ensure_ascii=False, indent=2))
+    return 2
 
 
 def _quickread_payload(

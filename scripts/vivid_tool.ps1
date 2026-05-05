@@ -1,6 +1,6 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("doctor", "paths", "quickread", "web-ui", "vision-configs", "vision-prompts", "vision-select-config", "vision-upsert-config", "vision-upsert-prompt", "transcription-presets", "transcription-select-preset", "transcription-upsert-preset")]
+    [ValidateSet("doctor", "paths", "quickread", "web-ui", "bili-auth-qrcode", "bili-auth-poll", "bili-auth-status", "bili-auth-logout", "vision-configs", "vision-prompts", "vision-select-config", "vision-upsert-config", "vision-upsert-prompt", "transcription-presets", "transcription-select-preset", "transcription-upsert-preset")]
     [string]$Action,
     [string]$Source,
     [string]$ProjectName,
@@ -16,6 +16,7 @@ param(
     [string]$CloudBaseUrl,
     [string]$Sessdata,
     [string]$BiliCookie,
+    [string]$QrcodeKey,
     [switch]$NoSessdata,
     [string]$FfmpegBin,
     [string]$WhisperRoot,
@@ -84,6 +85,58 @@ function Invoke-ControlCli {
     }
 }
 
+function Resolve-QuickreadDataDir {
+    if ($DataDir) {
+        if ([System.IO.Path]::IsPathRooted($DataDir)) {
+            return [System.IO.Path]::GetFullPath($DataDir)
+        }
+        return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $DataDir))
+    }
+    if ($env:VIVID_DATA_DIR) {
+        if ([System.IO.Path]::IsPathRooted($env:VIVID_DATA_DIR)) {
+            return [System.IO.Path]::GetFullPath($env:VIVID_DATA_DIR)
+        }
+        return [System.IO.Path]::GetFullPath((Join-Path $repoRoot $env:VIVID_DATA_DIR))
+    }
+    return [System.IO.Path]::GetFullPath((Join-Path $repoRoot "data"))
+}
+
+function Test-QuickreadLockOrExit {
+    if ($ExecutionMode -eq "cloud") {
+        return
+    }
+    $resolvedDataDir = Resolve-QuickreadDataDir
+    $lockPath = Join-Path $resolvedDataDir ".vivid\quickread.lock"
+    if (-not (Test-Path -LiteralPath $lockPath)) {
+        return
+    }
+    $lockPayload = $null
+    try {
+        $lockPayload = Get-Content -LiteralPath $lockPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    } catch {
+        return
+    }
+    if (-not $lockPayload.pid) {
+        return
+    }
+    try {
+        Get-Process -Id ([int]$lockPayload.pid) -ErrorAction Stop | Out-Null
+    } catch {
+        return
+    }
+    $payload = [ordered]@{
+        ok = $false
+        error_code = "quickread_busy"
+        error = "Another Vivid quickread task is already running."
+        lock_file = $lockPath
+    }
+    if ($lockPayload.pid) { $payload.pid = $lockPayload.pid }
+    if ($lockPayload.source) { $payload.running_source = $lockPayload.source }
+    if ($lockPayload.started_at) { $payload.started_at = $lockPayload.started_at }
+    $payload | ConvertTo-Json -Compress
+    exit 73
+}
+
 if ($Action -eq "doctor") {
     & "$PSScriptRoot\doctor.ps1"
     exit $LASTEXITCODE
@@ -96,6 +149,7 @@ switch ($Action) {
         if (-not $Source) {
             throw "Source is required for quickread."
         }
+        Test-QuickreadLockOrExit
 
         $cliArgs += @("--source", $Source, "--format", $Format)
         if ($ProjectName) { $cliArgs += @("--project-name", $ProjectName) }
@@ -126,6 +180,12 @@ switch ($Action) {
     }
     "web-ui" {
         $cliArgs += @("--host", $UiHost, "--port", "$Port")
+    }
+    "bili-auth-poll" {
+        if (-not $QrcodeKey) {
+            throw "QrcodeKey is required for bili-auth-poll."
+        }
+        $cliArgs += @("--qrcode-key", $QrcodeKey)
     }
     "vision-select-config" {
         if (-not $Id) {

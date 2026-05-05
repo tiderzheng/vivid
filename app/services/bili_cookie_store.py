@@ -4,10 +4,11 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 BILI_COOKIE_STORE_RELATIVE = Path("configs") / "secrets" / "bilibili_cookie.json"
 BILI_COOKIE_SCHEMA_VERSION = 1
+LOGIN_COOKIE_KEYS = ("SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5")
 _BILI_COOKIE_MARKERS = ("SESSDATA=", "bili_jct=")
 
 
@@ -46,6 +47,15 @@ def save_bili_cookie(repo_root: Path, cookie: str, source: str = "unknown") -> P
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     _chmod_user_only(path)
     return path
+
+
+def save_bili_cookie_values(repo_root: Path, values: Mapping[str, str], source: str = "unknown") -> Path:
+    cookie = "; ".join(
+        f"{name}={str(value).strip()}"
+        for name in LOGIN_COOKIE_KEYS
+        if (value := values.get(name)) is not None and str(value).strip()
+    )
+    return save_bili_cookie(repo_root, cookie, source=source)
 
 
 def clear_bili_cookie(repo_root: Path) -> None:

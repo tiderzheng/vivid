@@ -72,6 +72,7 @@ class Settings:
     calibration_system_prompt: str | None = None
     calibration_user_prompt: str | None = None
     calibration_prompts_path: Path | None = None
+    web_max_workers: int = 1
 
 
 def load_settings() -> Settings:
@@ -146,6 +147,7 @@ def load_settings() -> Settings:
         vision_system_prompt=os.environ.get("VIVID_VISION_SYSTEM_PROMPT") or None,
         vision_sample_ms=int(os.environ.get("VIVID_VISION_SAMPLE_MS", "800")),
         vision_min_duration_ms=int(os.environ.get("VIVID_VISION_MIN_DURATION_MS", "1200")),
+        web_max_workers=max(1, int(os.environ.get("VIVID_WEB_MAX_WORKERS", "1"))),
         vision_api_configs_path=Path(
             os.environ.get(
                 "VIVID_VISION_API_CONFIGS_FILE",

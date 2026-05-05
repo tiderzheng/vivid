@@ -475,7 +475,16 @@ OCR 默认也由 **瞬知** 自己配置。
 - `BILI_SESSDATA` - 兼容旧配置的 SESSDATA 回退值
 - `VIVID_DOUYIN_SCRIPT` - 自定义Douyin下载器路径
 
-当用户通过 CLI/Web 显式提供完整 Bilibili Cookie 时，Vivid 会保存到项目目录 `configs/secrets/bilibili_cookie.json`，该目录已被 `.gitignore` 忽略。运行时优先级为显式参数、`VIVID_BILI_COOKIE`、本地 secret 文件、旧 `SESSDATA` 回退、匿名指纹模式。
+Bilibili 登录态可以通过 Web UI 的“扫码登录 Bilibili”面板维护，也可以走控制命令：
+
+```powershell
+.\scripts\vivid_tool.ps1 -Action bili-auth-qrcode
+.\scripts\vivid_tool.ps1 -Action bili-auth-poll -QrcodeKey "<qrcode_key>"
+.\scripts\vivid_tool.ps1 -Action bili-auth-status
+.\scripts\vivid_tool.ps1 -Action bili-auth-logout
+```
+
+二维码登录成功后，Vivid 会保存 Bilibili 返回的登录 Cookie 到项目目录 `configs/secrets/bilibili_cookie.json`，该目录已被 `.gitignore` 忽略。显式提供完整 Cookie 时也会写入同一个 secret 文件。运行时优先级为显式参数、`VIVID_BILI_COOKIE`、本地 secret 文件、旧 `SESSDATA` 回退、匿名指纹模式。
 
 ## skill 怎么理解
 

@@ -214,6 +214,17 @@ Delegates to `tools/bilibili/bili23_agent_cli.py`. Requires ffmpeg.
 
 Bilibili rule updates generally belong in the helper, not the adapter. Compare behavior against `bili23/Bili23-Downloader`, keep the adapter subprocess contract stable unless wrapper arguments or error classification need to change, and cover helper behavior in `tests/test_download_adapters.py`.
 
+Bilibili login lifecycle is separate from downloader compatibility:
+
+```python
+def generate_bili_qrcode(*, session: requests.Session | None = None) -> BiliQrCodeInfo
+def poll_bili_qrcode(repo_root: Path, qrcode_key: str, *, session: requests.Session | None = None) -> BiliQrCodePollResult
+def get_bili_login_status(repo_root: Path, *, session: requests.Session | None = None) -> BiliLoginStatus
+def logout_bili(repo_root: Path, *, session: requests.Session | None = None) -> BiliLogoutResult
+```
+
+These live in `app/services/bili_auth.py` and persist login cookies through `app/services/bili_cookie_store.py` into `configs/secrets/bilibili_cookie.json`. Public API/CLI payloads expose status only, never the cookie value.
+
 ### `DouyinAdapter` (`app/adapters/douyin.py`)
 ```python
 class DouyinAdapter:

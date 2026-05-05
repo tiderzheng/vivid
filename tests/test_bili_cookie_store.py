@@ -9,6 +9,7 @@ from app.services.bili_cookie_store import (
     bili_cookie_store_path,
     load_bili_cookie,
     save_bili_cookie,
+    save_bili_cookie_values,
 )
 
 
@@ -40,3 +41,20 @@ def test_bili_cookie_store_ignores_missing_or_invalid_files(tmp_path: Path):
 def test_bili_cookie_store_rejects_invalid_cookie_text(tmp_path: Path):
     with pytest.raises(ValueError, match="Bilibili cookie"):
         save_bili_cookie(tmp_path, "not-a-bili-cookie", source="cli")
+
+
+def test_bili_cookie_store_saves_login_cookie_values(tmp_path: Path):
+    path = save_bili_cookie_values(
+        tmp_path,
+        {
+            "SESSDATA": "demo",
+            "bili_jct": "csrf",
+            "DedeUserID": "42",
+            "DedeUserID__ckMd5": "md5",
+            "ignored_empty": "",
+        },
+        source="qrcode",
+    )
+
+    assert path == bili_cookie_store_path(tmp_path)
+    assert load_bili_cookie(tmp_path) == "SESSDATA=demo; bili_jct=csrf; DedeUserID=42; DedeUserID__ckMd5=md5"

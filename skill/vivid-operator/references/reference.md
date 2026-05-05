@@ -6,7 +6,7 @@
 
 | 参数 | Windows | Linux/macOS | 说明 |
 |---|---|---|---|
-| Action | `-Action` | `-Action` | `doctor / quickread / paths / web-ui` |
+| Action | `-Action` | `-Action` | `doctor / quickread / paths / web-ui / bili-auth-qrcode / bili-auth-poll / bili-auth-status / bili-auth-logout` |
 | Source | `-Source` | `-Source` | 视频链接或本地媒体路径 |
 | VividRoot | `-VividRoot` | `--vivid-root` | Vivid 仓库路径 |
 | Model | `-Model` | `-Model` | Whisper 模型：`tiny/base/small/medium/large` |
@@ -31,6 +31,7 @@
 | BiliCookie | `-BiliCookie` | `--bili-cookie` | `Bilibili` 完整 `Cookie`，登录失败时优先传入；应用层会保存到项目 secret 文件 |
 | Sessdata | `-Sessdata` | `--sessdata` | 兼容旧链路，仅在拿不到完整 `Cookie` 时使用 |
 | NoSessdata | `-NoSessdata` | `--no-sessdata` | 禁用 `SESSDATA` 回退 |
+| QrcodeKey | `-QrcodeKey` | `--qrcode-key` | `bili-auth-poll` 的二维码轮询 key |
 
 ### OCR / Vision 参数
 
@@ -72,12 +73,23 @@
 
 1. `-BiliCookie` / `--bili-cookie`
 2. `VIVID_BILI_COOKIE`
-3. `configs/secrets/bilibili_cookie.json`
+3. 二维码登录或手动 Cookie 写入的 `configs/secrets/bilibili_cookie.json`
 4. `-Sessdata` / `--sessdata`
 5. `BILI_SESSDATA`
 6. 匿名指纹模式
 
 用户通过 `-BiliCookie` / `--bili-cookie` 或 Web 表单显式提供完整 `Cookie` 时，Vivid 会保存到项目目录 `configs/secrets/bilibili_cookie.json`。`VIVID_BILI_COOKIE` 环境变量优先于该文件；不要把该文件内容复制到回答、日志、prompt 或 `skill_state.json`。
+
+二维码登录命令：
+
+```powershell
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action bili-auth-qrcode
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action bili-auth-poll -QrcodeKey "<qrcode_key>"
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action bili-auth-status
+./skill/vivid-operator/scripts/vivid_operator.ps1 -Action bili-auth-logout
+```
+
+轮询成功后只报告 `saved = true`，不回显 Cookie 明文。
 
 `-NoSessdata` / `--no-sessdata` 会禁用第 4、5 步的回退。
 

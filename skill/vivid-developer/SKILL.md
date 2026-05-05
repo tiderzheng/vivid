@@ -183,6 +183,7 @@ log_exception("event_name", exc, key=value)
 | New pipeline stage | `app/pipeline/orchestrator.py` | Insert after summarization, follow calibrate pattern |
 | New platform | `app/adapters/` | Implement `download_media()` + `get_video_title()` |
 | Bilibili rule change | `tools/bilibili/bili23_agent_cli.py` | Compare against `bili23/Bili23-Downloader`; keep `app/adapters/bilibili.py` CLI contract stable unless wrapper args change |
+| Bilibili login lifecycle | `app/services/bili_auth.py` + `app/services/bili_cookie_store.py` | QR login, status check, logout, and project-local cookie persistence; do not put secrets in public payloads |
 | New LLM provider | `configs/summary/providers.json` | JSON entry + env var |
 | New summary/calibration prompt | `configs/{summary,calibration}/prompts.json` | `{id, name, system_prompt, user_prompt_template}` |
 | New output file | `app/services/artifact_writer.py` | `_write_text()` + ArtifactBundle field |
@@ -276,7 +277,9 @@ else:
 
 8. **No formatter/linter** — the repo has no configured formatter. Match surrounding code style manually.
 
-9. **Bilibili compatibility lives in the helper** — compare rule changes against `bili23/Bili23-Downloader`, then update `tools/bilibili/bili23_agent_cli.py` with regression coverage in `tests/test_download_adapters.py`. Do not use `tools/Bili23-Downloader` as the reference source; that path is not the maintained upstream checkout. Do not change `app/adapters/bilibili.py` unless the helper CLI contract or adapter-level error mapping must change.
+9. **Bilibili download compatibility lives in the helper** — compare download/request rule changes against `bili23/Bili23-Downloader`, then update `tools/bilibili/bili23_agent_cli.py` with regression coverage in `tests/test_download_adapters.py`. Do not use `tools/Bili23-Downloader` as the reference source; that path is not the maintained upstream checkout. Do not change `app/adapters/bilibili.py` unless the helper CLI contract or adapter-level error mapping must change.
+
+10. **Bilibili login lifecycle lives in services** — QR login, status check, logout, and project-local cookie persistence belong in `app/services/bili_auth.py` and `app/services/bili_cookie_store.py`, with API coverage in `tests/test_bili_auth.py`, `tests/test_control_cli.py`, and `tests/test_web_ui.py`. Public payloads must never include cookie text.
 
 ## References
 

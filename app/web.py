@@ -23,6 +23,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from .config import Settings, load_settings
 from .pipeline.orchestrator import OrchestratorResult, run_quickread
 from .runtime_factory import build_runtime_options
+from .services.bili_auth import (
+    BiliQrCodeExpiredError,
+    BiliQrCodePending,
+    BiliQrCodeWaitingForConfirmation,
+    generate_bili_qrcode,
+    get_bili_login_status,
+    logout_bili,
+    poll_bili_qrcode,
+)
 from .services.bili_cookie_store import save_bili_cookie
 from .services.dependency_bootstrap import ensure_opencv_dependency
 from .services.diagnostics import build_error_summary, extract_failure_chain
@@ -102,10 +111,10 @@ class WebJobRecord:
 
 
 class WebJobManager:
-    def __init__(self, history_path: Path) -> None:
+    def __init__(self, history_path: Path, max_workers: int = 1) -> None:
         self.history_path = history_path
         self.lock = Lock()
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vivid-web")
+        self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)), thread_name_prefix="vivid-web")
         self.records: dict[str, WebJobRecord] = {}
         self.order: list[str] = []
         self._load()
@@ -444,7 +453,7 @@ def get_job_manager(settings: Settings) -> WebJobManager:
     with _JOB_MANAGERS_LOCK:
         manager = _JOB_MANAGERS.get(key)
         if manager is None:
-            manager = WebJobManager(history_path)
+            manager = WebJobManager(history_path, max_workers=settings.web_max_workers)
             _JOB_MANAGERS[key] = manager
         return manager
 
@@ -642,6 +651,41 @@ async def quickread(request: Request) -> JSONResponse:
     finally:
         if temp_upload_path:
             _delete_file_quietly(Path(temp_upload_path))
+
+
+@app.post("/api/bilibili/auth/qrcode")
+async def bilibili_auth_qrcode() -> dict[str, Any]:
+    qrcode = generate_bili_qrcode()
+    return {"ok": True, "qrcode": qrcode.to_public_dict()}
+
+
+@app.get("/api/bilibili/auth/poll")
+async def bilibili_auth_poll(qrcode_key: str = Query(...)) -> dict[str, Any]:
+    settings = load_settings()
+    try:
+        result = poll_bili_qrcode(settings.repo_root, qrcode_key)
+    except BiliQrCodePending as exc:
+        return {"ok": False, "status": "waiting_for_scan", "message": str(exc)}
+    except BiliQrCodeWaitingForConfirmation as exc:
+        return {"ok": False, "status": "waiting_for_confirmation", "message": str(exc)}
+    except BiliQrCodeExpiredError as exc:
+        return {"ok": False, "status": "expired", "message": str(exc)}
+    return {"ok": True, **result.to_public_dict()}
+
+
+@app.get("/api/bilibili/auth/status")
+async def bilibili_auth_status() -> dict[str, Any]:
+    settings = load_settings()
+    status = get_bili_login_status(settings.repo_root)
+    return {"ok": True, "status": status.to_public_dict()}
+
+
+@app.post("/api/bilibili/auth/logout")
+async def bilibili_auth_logout() -> dict[str, Any]:
+    settings = load_settings()
+    result = logout_bili(settings.repo_root)
+    payload = result.to_public_dict()
+    return {"ok": bool(payload.get("ok")), "logout": payload}
 
 
 @app.get("/files")
@@ -988,6 +1032,10 @@ def _render_index() -> str:
     .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
     .toolbar button { width:auto; padding:8px 12px; }
     .check { width:auto; margin:0; }
+    .auth-panel { border:1px solid var(--line); border-radius:12px; padding:12px; background:#0b1220; display:grid; gap:10px; }
+    .auth-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .qrcode { width:100%; min-height:160px; display:grid; place-items:center; border:1px solid var(--line); border-radius:10px; background:#fff; color:#0f172a; overflow:hidden; }
+    .qrcode svg { width:150px; height:150px; }
     .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:12px; }
     .stat { border:1px solid var(--line); border-radius:10px; padding:10px; background:#0f172a; }
     .stat strong { display:block; font-size:18px; }
@@ -1074,6 +1122,20 @@ def _render_index() -> str:
         <label>兼容 SESSDATA（可选）
           <input name="sessdata" placeholder="只填 SESSDATA 值；完整 Cookie 优先" />
         </label>
+        <div class="auth-panel">
+          <div class="row">
+            <strong>扫码登录 Bilibili</strong>
+            <span id="bili-auth-status" class="status queued">未检测</span>
+          </div>
+          <div id="bili-qrcode" class="qrcode"><span class="muted">生成后用 Bilibili App 扫码</span></div>
+          <div class="auth-actions">
+            <button id="bili-qrcode-btn" class="secondary" type="button">生成二维码</button>
+            <button id="bili-status-btn" class="secondary" type="button">校验登录态</button>
+            <button id="bili-logout-btn" class="secondary" type="button">注销清除</button>
+            <button id="bili-clear-qr-btn" class="secondary" type="button">清空二维码</button>
+          </div>
+          <div id="bili-auth-message" class="hint"></div>
+        </div>
         <div class="grid2">
           <div class="hint">OCR API 按 OpenAI 兼容格式配置：`base + path + api_key + model`。</div>
           <button id="save-vision-openai-btn" class="secondary" type="button">设为默认 OCR API 配置</button>
@@ -1129,7 +1191,7 @@ def _render_index() -> str:
     </section>
   </div>
   <script>
-    const state = { bootstrap: null, activeJobId: null, pollTimer: null, eventSource: null, file: null, jobs: [], selectedJobIds: new Set() };
+    const state = { bootstrap: null, activeJobId: null, pollTimer: null, eventSource: null, file: null, jobs: [], selectedJobIds: new Set(), biliQrCodeKey: null, biliAuthTimer: null };
     const storageKey = "vivid-web-ui-form";
     document.addEventListener("DOMContentLoaded", async () => {
       bindDropzone();
@@ -1142,8 +1204,13 @@ def _render_index() -> str:
       document.getElementById("select-visible-btn").addEventListener("click", selectVisibleJobs);
       document.getElementById("clear-selection-btn").addEventListener("click", clearSelectedJobs);
       document.getElementById("export-selected-btn").addEventListener("click", exportSelectedJobs);
+      document.getElementById("bili-qrcode-btn").addEventListener("click", createBiliQrCode);
+      document.getElementById("bili-status-btn").addEventListener("click", refreshBiliAuthStatus);
+      document.getElementById("bili-logout-btn").addEventListener("click", logoutBiliAuth);
+      document.getElementById("bili-clear-qr-btn").addEventListener("click", clearBiliQrCode);
       await loadBootstrap();
       restoreForm();
+      await refreshBiliAuthStatus();
     });
 
     async function loadBootstrap() {
@@ -1623,13 +1690,117 @@ def _render_index() -> str:
       setFormMessage("默认 OCR API 配置已保存");
     }
 
+    async function createBiliQrCode() {
+      setBiliAuthMessage("正在生成二维码...");
+      window.clearTimeout(state.biliAuthTimer);
+      const response = await fetch("/api/bilibili/auth/qrcode", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        setBiliAuthMessage(payload.detail || payload.error || "二维码生成失败", true);
+        return;
+      }
+      const qrcode = payload.qrcode || {};
+      state.biliQrCodeKey = qrcode.qrcode_key || null;
+      const box = document.getElementById("bili-qrcode");
+      if (qrcode.qrcode_svg) {
+        box.innerHTML = qrcode.qrcode_svg;
+      } else {
+        box.innerHTML = `<a href="${escapeAttr(qrcode.url || "#")}" target="_blank">打开二维码链接</a>`;
+      }
+      setBiliAuthBadge("waiting_for_scan");
+      setBiliAuthMessage("等待扫码...");
+      scheduleBiliAuthPoll();
+    }
+
+    async function pollBiliAuth() {
+      if (!state.biliQrCodeKey) return;
+      const response = await fetch(`/api/bilibili/auth/poll?qrcode_key=${encodeURIComponent(state.biliQrCodeKey)}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        setBiliAuthMessage(payload.detail || payload.error || "二维码轮询失败", true);
+        return;
+      }
+      setBiliAuthBadge(payload.status || (payload.ok ? "success" : ""));
+      if (payload.ok) {
+        setBiliAuthMessage("登录态已保存到项目 secret 文件");
+        state.biliQrCodeKey = null;
+        window.clearTimeout(state.biliAuthTimer);
+        await refreshBiliAuthStatus();
+        return;
+      }
+      if (payload.status === "expired") {
+        setBiliAuthMessage(payload.message || "二维码已过期", true);
+        state.biliQrCodeKey = null;
+        return;
+      }
+      setBiliAuthMessage(payload.message || "等待扫码确认...");
+      scheduleBiliAuthPoll();
+    }
+
+    function scheduleBiliAuthPoll() {
+      window.clearTimeout(state.biliAuthTimer);
+      state.biliAuthTimer = window.setTimeout(pollBiliAuth, 2000);
+    }
+
+    async function refreshBiliAuthStatus() {
+      const response = await fetch("/api/bilibili/auth/status");
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        setBiliAuthMessage(payload.detail || payload.error || "登录态校验失败", true);
+        return;
+      }
+      const status = payload.status || {};
+      if (status.is_login) {
+        setBiliAuthBadge("completed", status.uname ? `已登录：${status.uname}` : "已登录");
+        setBiliAuthMessage(status.mid ? `mid: ${status.mid}` : "登录态有效");
+      } else if (status.cookie_present) {
+        setBiliAuthBadge("failed", "已失效");
+        setBiliAuthMessage("本地存在 Bilibili cookie，但校验未登录", true);
+      } else {
+        setBiliAuthBadge("queued", "未登录");
+        setBiliAuthMessage("未检测到本地 Bilibili 登录态");
+      }
+    }
+
+    async function logoutBiliAuth() {
+      window.clearTimeout(state.biliAuthTimer);
+      const response = await fetch("/api/bilibili/auth/logout", { method: "POST" });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        setBiliAuthMessage(payload.detail || payload.error || "注销失败", true);
+        return;
+      }
+      clearBiliQrCode();
+      setBiliAuthBadge("queued", "未登录");
+      setBiliAuthMessage(payload.logout?.cleared ? "已注销并清除本地登录态" : "本地没有可清除的登录态");
+    }
+
+    function clearBiliQrCode() {
+      window.clearTimeout(state.biliAuthTimer);
+      state.biliQrCodeKey = null;
+      document.getElementById("bili-qrcode").innerHTML = '<span class="muted">生成后用 Bilibili App 扫码</span>';
+    }
+
+    function setBiliAuthBadge(status, text = "") {
+      const node = document.getElementById("bili-auth-status");
+      const className = status === "success" || status === "completed" ? "completed" : status === "expired" || status === "failed" ? "failed" : status === "waiting_for_confirmation" ? "running" : "queued";
+      node.className = `status ${className}`;
+      node.textContent = text || status || "未检测";
+    }
+
+    function setBiliAuthMessage(message, isError = false) {
+      const node = document.getElementById("bili-auth-message");
+      node.textContent = message;
+      node.style.color = isError ? "#ef4444" : "#94a3b8";
+    }
+
     function collectSourceInputs(formData) {
       const sources = [];
       const seen = new Set();
       for (const key of ["source_url", "source_urls"]) {
         const text = String(formData.get(key) || "").trim();
         if (!text) continue;
-        for (const line of text.split(/\r?\n/)) {
+        for (const line of text.split(/\\r?\\n/)) {
           const source = line.trim();
           if (!source || seen.has(source)) continue;
           seen.add(source);

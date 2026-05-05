@@ -4,7 +4,7 @@ from pathlib import Path
 from app.cli import build_parser as build_app_parser
 from app.cli import main as app_cli_main
 from app.config import Settings
-from app.control_cli import _run_quickread, build_doctor_payload, build_parser, build_paths_payload
+from app.control_cli import _handle_bili_auth_action, _run_quickread, build_doctor_payload, build_parser, build_paths_payload
 from app.services.cloud_bridge import CloudQuickreadError
 
 
@@ -482,3 +482,102 @@ def test_run_quickread_cloud_mode_preserves_structured_remote_error(tmp_path, mo
     assert payload["execution_mode"] == "cloud"
     assert payload["error_code"] == "cloud_unavailable"
     assert "can_continue_without_sessdata" not in payload
+
+
+def test_bili_auth_status_cli_outputs_public_payload(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(["bili-auth-status"])
+
+    class FakeStatus:
+        def to_public_dict(self):
+            return {
+                "is_login": True,
+                "cookie_present": True,
+                "uname": "tester",
+                "mid": 42,
+            }
+
+    monkeypatch.setattr("app.control_cli.get_bili_login_status", lambda repo_root: FakeStatus())
+
+    exit_code = _handle_bili_auth_action(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload == {
+        "action": "bili-auth-status",
+        "ok": True,
+        "status": {
+            "is_login": True,
+            "cookie_present": True,
+            "uname": "tester",
+            "mid": 42,
+        },
+    }
+    assert "SESSDATA" not in json.dumps(payload)
+
+
+def test_bili_auth_qrcode_cli_outputs_key_and_url(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(["bili-auth-qrcode"])
+
+    class FakeQrCode:
+        def to_public_dict(self):
+            return {
+                "qrcode_key": "abc",
+                "url": "https://passport.bilibili.com/login?qrcode_key=abc",
+                "status": "waiting_for_scan",
+            }
+
+    monkeypatch.setattr("app.control_cli.generate_bili_qrcode", lambda: FakeQrCode())
+
+    exit_code = _handle_bili_auth_action(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["action"] == "bili-auth-qrcode"
+    assert payload["ok"] is True
+    assert payload["qrcode"]["qrcode_key"] == "abc"
+
+
+def test_bili_auth_poll_cli_reports_pending_without_error(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(["bili-auth-poll", "--qrcode-key", "abc"])
+
+    from app.services.bili_auth import BiliQrCodePending
+
+    monkeypatch.setattr(
+        "app.control_cli.poll_bili_qrcode",
+        lambda repo_root, qrcode_key: (_ for _ in ()).throw(BiliQrCodePending("waiting for scan")),
+    )
+
+    exit_code = _handle_bili_auth_action(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload == {
+        "action": "bili-auth-poll",
+        "ok": False,
+        "status": "waiting_for_scan",
+        "message": "waiting for scan",
+    }
+
+
+def test_bili_auth_logout_cli_clears_cookie(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    args = build_parser().parse_args(["bili-auth-logout"])
+
+    class FakeLogout:
+        def to_public_dict(self):
+            return {"ok": True, "cleared": True, "message": "ok"}
+
+    monkeypatch.setattr("app.control_cli.logout_bili", lambda repo_root: FakeLogout())
+
+    exit_code = _handle_bili_auth_action(args, settings)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload == {
+        "action": "bili-auth-logout",
+        "ok": True,
+        "logout": {"ok": True, "cleared": True, "message": "ok"},
+    }
