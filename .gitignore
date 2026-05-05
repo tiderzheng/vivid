@@ -8,9 +8,11 @@ __pycache__/
 data/**
 !data/.gitkeep
 configs/web_ui/preferences.json
+configs/secrets/
 dist/
 build/
 *.egg-info/
 skill/vivid-operator/state/*.json
 docs/review*.txt
 .worktrees/
+bili23/

@@ -28,7 +28,7 @@
 | ArtifactTarget | `-ArtifactTarget` | `--artifact-target` | `local_only / cloud_only / both` |
 | CloudProfile | `-CloudProfile` | `--cloud-profile` | 云端配置名 |
 | CloudBaseUrl | `-CloudBaseUrl` | `--cloud-base-url` | 远端 Vivid Web API 地址 |
-| BiliCookie | `-BiliCookie` | `--bili-cookie` | `Bilibili` 完整 `Cookie`，登录失败时优先临时传入，不落盘 |
+| BiliCookie | `-BiliCookie` | `--bili-cookie` | `Bilibili` 完整 `Cookie`，登录失败时优先传入；应用层会保存到项目 secret 文件 |
 | Sessdata | `-Sessdata` | `--sessdata` | 兼容旧链路，仅在拿不到完整 `Cookie` 时使用 |
 | NoSessdata | `-NoSessdata` | `--no-sessdata` | 禁用 `SESSDATA` 回退 |
 
@@ -62,15 +62,26 @@
 
 `Bilibili` 现在按直接下载媒体处理，不恢复官方字幕优先。helper 会优先使用完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名指纹 `Cookie`。
 
+支持常见 `Bilibili` 链接形态：`BV`、`av`、`ep`、`ss`、`md`。
+
+匿名请求画像会补 `_uuid`、`b_lsid`、`b_nut`、`buvid3`、`buvid4`、`buvid_fp`，并尽量获取 `bili_ticket` / 调用 `ExClimbWuzhi`。helper 按 `Bili23` 模型维护这些匿名字段；用户传入的完整 `Cookie` 如果带有旧匿名字段，会被 helper 刷新覆盖。这些增强失败不应被直接解释为登录失败。
+
+下载前 helper 会用 `HEAD` 跳过文本响应或过小 CDN 错误页，减少把风控错误页当成视频文件的概率。
+
 ## Bilibili Auth Priority
 
 1. `-BiliCookie` / `--bili-cookie`
 2. `VIVID_BILI_COOKIE`
-3. `-Sessdata` / `--sessdata`
-4. `BILI_SESSDATA`
-5. 匿名指纹模式
+3. `configs/secrets/bilibili_cookie.json`
+4. `-Sessdata` / `--sessdata`
+5. `BILI_SESSDATA`
+6. 匿名指纹模式
 
-`-NoSessdata` / `--no-sessdata` 会禁用第 3、4 步的回退。
+用户通过 `-BiliCookie` / `--bili-cookie` 或 Web 表单显式提供完整 `Cookie` 时，Vivid 会保存到项目目录 `configs/secrets/bilibili_cookie.json`。`VIVID_BILI_COOKIE` 环境变量优先于该文件；不要把该文件内容复制到回答、日志、prompt 或 `skill_state.json`。
+
+`-NoSessdata` / `--no-sessdata` 会禁用第 4、5 步的回退。
+
+匿名指纹模式不是“无需任何请求状态”。它仍会生成本次请求画像，并尽力补充 `bili_ticket` 等短期票据；只有明确返回登录错误时才需要转向用户提供完整 `Cookie`。
 
 ## Success Payload
 
@@ -135,6 +146,8 @@
 - `SESSDATA`
 - API Key
 - Token
+
+例外：Bilibili 完整 `Cookie` 的持久化由 Vivid 应用层写入项目目录 `configs/secrets/bilibili_cookie.json`，不属于 skill 状态文件，agent 不应直接读取、展示或改写其中内容。
 
 ## Repo Resolution Priority
 

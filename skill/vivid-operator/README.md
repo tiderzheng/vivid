@@ -26,7 +26,7 @@
 # 执行速看
 ./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "视频链接或本地路径"
 
-# Bilibili 登录失败时，优先临时传完整 Cookie
+# Bilibili 登录失败时，优先显式传完整 Cookie
 ./skill/vivid-operator/scripts/vivid_operator.ps1 -Action quickread -Source "https://www.bilibili.com/video/BV..." -BiliCookie "SESSDATA=...; bili_jct=...; DedeUserID=..."
 
 # 只有拿不到完整 Cookie 时，再兼容旧的 SESSDATA
@@ -55,7 +55,7 @@
 - `cloud_profile`
 - `cloud_base_url`
 
-不保存 Cookie、Token、API Key。
+不保存 Cookie、Token、API Key。`Bilibili` 完整 `Cookie` 如由用户显式传入，会由 Vivid 应用层保存到项目目录 `configs/secrets/bilibili_cookie.json`，不写入 skill 状态。
 
 ## Agent Behavior Contract
 
@@ -102,12 +102,17 @@
 ### Bilibili 规则
 
 - `Bilibili` 仍然按“直接下载媒体 -> Whisper / OCR”处理，不恢复官方字幕优先
-- helper 会先尝试完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名指纹 `Cookie`
+- helper 会先尝试完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名请求画像
+- 匿名请求画像包括 `_uuid`、`b_lsid`、`b_nut`、`buvid3`、`buvid4`、`buvid_fp`，由 helper 按 `Bili23` 规则维护；即使完整 `Cookie` 里带了这些旧值，helper 也会刷新覆盖
+- helper 会先写入基础登录态，再获取/刷新匿名画像、尽量获取 `bili_ticket` 与调用 `ExClimbWuzhi` 激活
+- `bili_ticket` / `ExClimbWuzhi` 获取失败不等于需要登录；除非错误明确指向登录失败，不要因此要求用户提供 `Cookie`
+- 支持常见 `Bilibili` 链接形态：`BV`、`av`、`ep`、`ss`、`md`
 - agent 不应在首次尝试前就要求用户提供 `Cookie / SESSDATA`
-- 只有在出现 `-101`、`账号未登录`、`login required` 之类登录错误后，才应让用户本次临时提供完整 `Cookie`
+- 只有在出现 `-101`、`账号未登录`、`login required` 之类登录错误后，才应让用户显式提供完整 `Cookie`
 - 优先建议 `-BiliCookie` / `--bili-cookie` 或 `VIVID_BILI_COOKIE`
+- 用户显式传入完整 `Cookie` 后，Vivid 会保存到项目目录 `configs/secrets/bilibili_cookie.json`，后续可自动回用；不要在回答、日志、prompt 或 `skill_state.json` 中回显该值
 - 只有拿不到完整 `Cookie` 时，才兼容 `-Sessdata` / `--sessdata`
-- 不要建议把 `Cookie / SESSDATA` 持久化到 `skill_state.json` 或其他文件
+- 不要建议把 `Cookie / SESSDATA` 持久化到 `skill_state.json` 或非项目 secret 文件
 
 ### 云端模式
 

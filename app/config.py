@@ -13,6 +13,7 @@ from .constants import (
     DEFAULT_SILICONFLOW_BASE,
 )
 from .services.ffmpeg_locator import resolve_ffmpeg_bin
+from .services.bili_cookie_store import load_bili_cookie
 
 
 @dataclass(slots=True)
@@ -77,6 +78,7 @@ def load_settings() -> Settings:
     repo_root = Path(__file__).resolve().parents[1]
     tools_root = repo_root.parent
     data_dir = Path(os.environ.get("VIVID_DATA_DIR", "data")).expanduser()
+    persisted_bili_cookie = load_bili_cookie(repo_root)
     return Settings(
         repo_root=repo_root,
         tools_root=tools_root,
@@ -162,7 +164,7 @@ def load_settings() -> Settings:
                 str(repo_root / "configs" / "transcription" / "presets.json"),
             )
         ),
-        bili_cookie=os.environ.get("VIVID_BILI_COOKIE") or None,
+        bili_cookie=os.environ.get("VIVID_BILI_COOKIE") or persisted_bili_cookie,
         sessdata=os.environ.get("BILI_SESSDATA") or None,
         summary_prompt_id=os.environ.get("VIVID_SUMMARY_PROMPT_ID") or None,
         summary_system_prompt=os.environ.get("VIVID_SUMMARY_SYSTEM_PROMPT") or None,

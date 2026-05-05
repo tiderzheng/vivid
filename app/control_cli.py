@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
-import os
 import shutil
 import sys
 from pathlib import Path
@@ -13,6 +12,7 @@ from .config import Settings, load_settings
 from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
 from .services.cloud_bridge import CloudQuickreadError, run_cloud_quickread
+from .services.bili_cookie_store import save_bili_cookie
 from .services.dependency_bootstrap import ensure_opencv_dependency
 from .services.ffmpeg_locator import inspect_ffmpeg
 from .subsystems.transcription import TranscriptionPreset, load_transcription_store
@@ -50,7 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-CloudBaseUrl", "--cloud-base-url")
     quickread.add_argument("-Sessdata", "--sessdata", help=argparse.SUPPRESS)
     quickread.add_argument("-NoSessdata", "--no-sessdata", action="store_true", help=argparse.SUPPRESS)
-    quickread.add_argument("-BiliCookie", "--bili-cookie", default=os.environ.get("VIVID_BILI_COOKIE"), help="Bilibili cookie for helper auth")
+    quickread.add_argument("-BiliCookie", "--bili-cookie", help="Bilibili cookie for helper auth")
     quickread.add_argument("-FfmpegBin", "--ffmpeg-bin")
     quickread.add_argument("-WhisperRoot", "--whisper-root")
     quickread.add_argument("-AcquisitionMode", "--acquisition-mode", choices=["auto", "smart", "prefer_ocr", "force_ocr"])
@@ -352,6 +352,7 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
 
 def _run_quickread(args: argparse.Namespace, settings: Settings) -> int:
     ensure_opencv_dependency(raise_on_failure=False)
+    _persist_bili_cookie_if_present(settings.repo_root, args.bili_cookie, source="control_cli")
     try:
         if args.execution_mode == "cloud":
             result = run_cloud_quickread(args, settings)
@@ -543,6 +544,15 @@ def _handle_transcription_action(args: argparse.Namespace, settings: Settings) -
         print(json.dumps({"ok": True, "id": args.id}, ensure_ascii=False, indent=2))
         return 0
     return 2
+
+
+def _persist_bili_cookie_if_present(repo_root: Path, bili_cookie: str | None, *, source: str) -> None:
+    if not bili_cookie:
+        return
+    try:
+        save_bili_cookie(repo_root, bili_cookie, source=source)
+    except (OSError, ValueError):
+        return
 
 
 def _module_available(name: str) -> bool:

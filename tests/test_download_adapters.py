@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 
@@ -105,23 +106,30 @@ def test_bilibili_adapter_reads_title_from_probe_episodes_without_helper_cli_fla
 def test_bilibili_helper_prefers_full_cookie_and_fills_missing_fields(monkeypatch):
     helper = _load_bilibili_helper()
     monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
-    monkeypatch.setattr(helper, "_fetch_spi_buvids", lambda _session: {"buvid4": "from-spi"})
+    monkeypatch.setattr(helper, "_fetch_spi_buvids", lambda _session: {"buvid3": "from-spi3", "buvid4": "from-spi4"})
 
     cookies = helper._build_cookie_values(
-        "SESSDATA=full-cookie; buvid3=from-cookie; foo=bar",
+        (
+            "SESSDATA=full-cookie; buvid3=stale-buvid3; buvid4=stale-buvid4; "
+            "_uuid=stale-uuid; b_lsid=stale-lsid; b_nut=1; buvid_fp=stale-fp; foo=bar"
+        ),
         "legacy-sessdata",
         helper.requests.Session(),
     )
 
     assert cookies["SESSDATA"] == "full-cookie"
-    assert cookies["buvid3"] == "from-cookie"
-    assert cookies["buvid4"] == "from-spi"
+    assert cookies["buvid3"] == "from-spi3"
+    assert cookies["buvid4"] == "from-spi4"
     assert cookies["foo"] == "bar"
     assert cookies["_uuid"].endswith("00000infoc")
     assert cookies["b_lsid"].endswith("_6553F100")
     assert cookies["b_nut"] == "1700000000"
     assert cookies["CURRENT_FNVAL"] == "4048"
     assert cookies["CURRENT_QUALITY"] == "0"
+    assert cookies["buvid_fp"]
+    assert cookies["_uuid"] != "stale-uuid"
+    assert cookies["b_lsid"] != "stale-lsid"
+    assert cookies["buvid_fp"] != "stale-fp"
 
 
 def test_bilibili_helper_uses_sessdata_when_full_cookie_missing(monkeypatch):
@@ -162,6 +170,227 @@ def test_bilibili_helper_generates_anonymous_fingerprint_without_auth(monkeypatc
     assert cookies["CURRENT_QUALITY"] == "0"
     assert cookies["buvid3"] == "spi-buvid3"
     assert cookies["buvid4"] == "spi-buvid4"
+    assert cookies["buvid_fp"]
+
+
+def test_bilibili_helper_uses_bili23_user_agent():
+    helper = _load_bilibili_helper()
+
+    assert helper.UA == (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36 Edg/147.0.0.0"
+    )
+
+
+def test_bilibili_helper_generates_uuid_and_lsid_like_bili23(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.random, "choice", lambda seq: seq[0])
+    monkeypatch.setattr(helper.random, "randint", lambda _start, _end: 10)
+
+    assert helper._generate_uuid_cookie(1700000000).startswith(
+        "11111111-1111-1111-1111-111111111111"
+    )
+    assert helper._generate_b_lsid(1700000000) == "AAAAAAAA_6553F100"
+
+
+def test_bilibili_helper_uses_full_bili23_exclimbwuzhi_payload(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
+
+    payload = json.loads(helper._exclimbwuzhi_payload(helper.UA, "uuid-value"))
+    inner = json.loads(payload["payload"])
+    fingerprint = inner["3c43"]
+
+    assert inner["df35"] == "uuid-value"
+    assert '"ab_version"' in inner["54ef"]
+    assert fingerprint["80c9"]
+    assert fingerprint["a3c1"]
+    assert fingerprint["a658"]
+    assert fingerprint["6bc5"] == (
+        "Google Inc. (NVIDIA)~ANGLE (NVIDIA, NVIDIA GeForce RTX 4060 Laptop GPU "
+        "(0x000028E0) Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    )
+
+
+def test_bilibili_helper_generates_exact_bili23_buvid_fp():
+    helper = _load_bilibili_helper()
+
+    assert helper._generate_buvid_fp(helper.UA, 31) == "7fe1916b46b7235c95fda0c2387f3114"
+
+
+def test_bilibili_helper_fetches_spi_after_base_login_cookie_is_set(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
+
+    def fake_fetch_spi(session):
+        assert session.cookies.get("SESSDATA") == "full-cookie"
+        assert session.cookies.get("bili_jct") == "csrf-token"
+        return {"buvid3": "spi-buvid3", "buvid4": "spi-buvid4"}
+
+    monkeypatch.setattr(helper, "_fetch_spi_buvids", fake_fetch_spi)
+    monkeypatch.setattr(helper, "_fetch_bili_ticket", lambda _session, _csrf: {})
+    monkeypatch.setattr(helper, "_activate_buvid", lambda _session, _values: None)
+
+    client = helper.C("SESSDATA=full-cookie; bili_jct=csrf-token", "")
+
+    assert client.s.cookies.get("buvid3") == "spi-buvid3"
+    assert client.s.cookies.get("buvid4") == "spi-buvid4"
+
+
+def test_bilibili_helper_fetches_ticket_and_activates_buvid(monkeypatch):
+    helper = _load_bilibili_helper()
+    monkeypatch.setattr(helper.time, "time", lambda: 1700000000.0)
+    monkeypatch.setattr(
+        helper,
+        "_fetch_spi_buvids",
+        lambda _session: {"buvid3": "spi-buvid3", "buvid4": "spi-buvid4"},
+    )
+    def fake_fetch_ticket(session, csrf):
+        assert csrf == "csrf-token"
+        assert session.cookies.get("SESSDATA") == "full-cookie"
+        assert session.cookies.get("bili_jct") == "csrf-token"
+        assert session.cookies.get("buvid3") == "spi-buvid3"
+        return {"bili_ticket": "ticket-value", "bili_ticket_expires": "1700259200"}
+
+    monkeypatch.setattr(helper, "_fetch_bili_ticket", fake_fetch_ticket, raising=False)
+    activated = {}
+
+    def fake_activate(_session, values):
+        activated.update(values)
+
+    monkeypatch.setattr(helper, "_activate_buvid", fake_activate, raising=False)
+
+    client = helper.C("SESSDATA=full-cookie; bili_jct=csrf-token", "")
+
+    assert client.s.cookies.get("bili_ticket") == "ticket-value"
+    assert client.s.cookies.get("bili_ticket_expires") == "1700259200"
+    assert activated["SESSDATA"] == "full-cookie"
+    assert activated["buvid3"] == "spi-buvid3"
+    assert activated["buvid4"] == "spi-buvid4"
+    assert activated["buvid_fp"]
+
+
+def test_bilibili_helper_parses_bangumi_media_md_url():
+    helper = _load_bilibili_helper()
+    calls = []
+
+    class FakeClient:
+        def expand(self, url):
+            return url
+
+        def j(self, url, p=None, h=None, sig=False, path=None):
+            calls.append((url, p, path))
+            if url.endswith("/pgc/review/user"):
+                return {"result": {"media": {"season_id": 456}}}
+            if url.endswith("/pgc/view/web/season"):
+                return {
+                    "title": "Season Title",
+                    "episodes": [
+                        {
+                            "id": 11,
+                            "aid": 22,
+                            "bvid": "BV1x",
+                            "cid": 33,
+                            "duration": 120000,
+                            "title": "1",
+                            "long_title": "Episode One",
+                            "share_url": "https://www.bilibili.com/bangumi/play/ep11",
+                        }
+                    ],
+                }
+            raise AssertionError(f"unexpected url: {url}")
+
+    result = helper.parse_ctx(FakeClient(), "https://www.bilibili.com/bangumi/media/md123")
+
+    assert result["stype"] == "bangumi"
+    assert result["eps"][0]["title"] == "E01-Episode One"
+    assert calls[0] == (
+        "https://api.bilibili.com/pgc/review/user",
+        {"media_id": 123},
+        None,
+    )
+    assert calls[1] == (
+        "https://api.bilibili.com/pgc/view/web/season",
+        {"season_id": 456},
+        ["result"],
+    )
+
+
+def test_bilibili_helper_skips_invalid_cdn_text_response(tmp_path):
+    helper = _load_bilibili_helper()
+    calls = []
+
+    class DummyResponse:
+        def __init__(self, content, headers):
+            self._content = content
+            self.headers = headers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_content(self, _chunk_size):
+            yield self._content
+
+    class FakeClient:
+        def r(self, method, url, **kwargs):
+            calls.append((method, url))
+            if method == "HEAD" and "bad" in url:
+                return DummyResponse(b"", {"Content-Type": "text/plain", "Content-Length": "512"})
+            if method == "HEAD" and "good" in url:
+                return DummyResponse(b"", {"Content-Type": "video/mp4", "Content-Length": "20480"})
+            if method == "GET" and "good" in url:
+                return DummyResponse(b"video-bytes", {"Content-Type": "video/mp4"})
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+    out = tmp_path / "video.m4s"
+
+    helper.dl(FakeClient(), ["https://cdn.example/bad", "https://cdn.example/good"], out, "https://ref", "video")
+
+    assert out.read_bytes() == b"video-bytes"
+    assert ("GET", "https://cdn.example/bad") not in calls
+
+
+def test_bilibili_helper_falls_back_to_head_unknown_urls_when_validated_mirror_fails(tmp_path):
+    helper = _load_bilibili_helper()
+    calls = []
+
+    class DummyResponse:
+        def __init__(self, content, headers):
+            self._content = content
+            self.headers = headers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def iter_content(self, _chunk_size):
+            yield self._content
+
+    class FakeClient:
+        def r(self, method, url, **kwargs):
+            calls.append((method, url))
+            if method == "HEAD" and "unknown" in url:
+                raise RuntimeError("HEAD unavailable")
+            if method == "HEAD" and "valid" in url:
+                return DummyResponse(b"", {"Content-Type": "video/mp4", "Content-Length": "20480"})
+            if method == "GET" and "valid" in url:
+                raise RuntimeError("validated mirror failed")
+            if method == "GET" and "unknown" in url:
+                return DummyResponse(b"fallback-bytes", {"Content-Type": "video/mp4"})
+            raise AssertionError(f"unexpected request: {method} {url}")
+
+    out = tmp_path / "video.m4s"
+
+    helper.dl(FakeClient(), ["https://cdn.example/unknown", "https://cdn.example/valid"], out, "https://ref", "video")
+
+    assert out.read_bytes() == b"fallback-bytes"
+    assert ("GET", "https://cdn.example/valid") in calls
+    assert ("GET", "https://cdn.example/unknown") in calls
 
 
 def test_bilibili_helper_resolves_cookie_from_new_flag_and_env(monkeypatch):

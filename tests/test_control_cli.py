@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from app.cli import build_parser as build_app_parser
+from app.cli import main as app_cli_main
 from app.config import Settings
 from app.control_cli import _run_quickread, build_doctor_payload, build_parser, build_paths_payload
 from app.services.cloud_bridge import CloudQuickreadError
@@ -228,6 +229,89 @@ def test_app_cli_parser_accepts_legacy_sessdata_flag():
     assert args.no_sessdata is True
 
 
+def test_app_cli_persists_explicit_bili_cookie(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "vivid",
+            "https://www.bilibili.com/video/BV1xx",
+            "--bili-cookie",
+            "SESSDATA=demo; bili_jct=token",
+            "--json",
+        ],
+    )
+    monkeypatch.setattr("app.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("app.cli.ensure_opencv_dependency", lambda raise_on_failure=False: {"ok": True})
+    monkeypatch.setattr("app.cli.build_runtime_options", fake_build_runtime_options)
+    monkeypatch.setattr(
+        "app.cli.save_bili_cookie",
+        lambda repo_root, cookie, source="unknown": captured.update(
+            {
+                "saved_repo_root": repo_root,
+                "saved_cookie": cookie,
+                "saved_source": source,
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        "app.cli.run_quickread",
+        lambda _options: type("Result", (), {"to_dict": lambda self: {"ok": True}})(),
+    )
+
+    exit_code = app_cli_main()
+
+    assert exit_code == 0
+    assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_repo_root"] == tmp_path
+    assert captured["saved_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_source"] == "cli"
+    assert "SESSDATA=demo" not in capsys.readouterr().out
+
+
+def test_app_cli_keeps_running_when_bili_cookie_persistence_fails(tmp_path, monkeypatch, capsys):
+    settings = _build_settings(tmp_path)
+    captured = {}
+
+    def fake_build_runtime_options(_settings, values):
+        captured["values"] = values
+        return object()
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "vivid",
+            "https://www.bilibili.com/video/BV1xx",
+            "--bili-cookie",
+            "SESSDATA=demo; bili_jct=token",
+            "--json",
+        ],
+    )
+    monkeypatch.setattr("app.cli.load_settings", lambda: settings)
+    monkeypatch.setattr("app.cli.ensure_opencv_dependency", lambda raise_on_failure=False: {"ok": True})
+    monkeypatch.setattr("app.cli.build_runtime_options", fake_build_runtime_options)
+    monkeypatch.setattr(
+        "app.cli.save_bili_cookie",
+        lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("secret file is locked")),
+    )
+    monkeypatch.setattr(
+        "app.cli.run_quickread",
+        lambda _options: type("Result", (), {"to_dict": lambda self: {"ok": True}})(),
+    )
+
+    exit_code = app_cli_main()
+
+    assert exit_code == 0
+    assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert "secret file is locked" not in capsys.readouterr().out
+
+
 def test_quickread_parser_accepts_bili_cookie_flag():
     parser = build_parser()
     args = parser.parse_args(
@@ -262,6 +346,16 @@ def test_run_quickread_forwards_bili_cookie_without_exposing_it(tmp_path, monkey
 
     monkeypatch.setattr("app.control_cli.build_runtime_options", fake_build_runtime_options)
     monkeypatch.setattr(
+        "app.control_cli.save_bili_cookie",
+        lambda repo_root, cookie, source="unknown": captured.update(
+            {
+                "saved_repo_root": repo_root,
+                "saved_cookie": cookie,
+                "saved_source": source,
+            }
+        ),
+    )
+    monkeypatch.setattr(
         "app.control_cli.run_quickread",
         lambda *args, **kwargs: type("Result", (), {"to_dict": lambda self: {"error_summary": None}})(),
     )
@@ -271,6 +365,9 @@ def test_run_quickread_forwards_bili_cookie_without_exposing_it(tmp_path, monkey
 
     assert exit_code == 0
     assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_repo_root"] == tmp_path
+    assert captured["saved_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_source"] == "control_cli"
     assert "bili_cookie" not in payload
     assert "sessdata" not in captured["values"]
     assert "no_sessdata" not in captured["values"]

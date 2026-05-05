@@ -355,7 +355,7 @@ python -m app.cli "<url>" --resume-workdir "data/项目名" --resume-stage calib
 | `SILICONFLOW_API_KEY` | — | SiliconFlow API 密钥 |
 | `DASHSCOPE_API_KEY` | — | DashScope API 密钥 |
 | `VIVID_SILICONFLOW_MODEL` | — | 覆盖 providers.json 中的 model |
-| `VIVID_BILI_COOKIE` | — | B 站 Cookie（用于高清下载和字幕） |
+| `VIVID_BILI_COOKIE` | — | B 站完整 Cookie，优先于项目本地 `configs/secrets/bilibili_cookie.json` |
 | `EARS4_API` | `http://127.0.0.1:7860` | Whisper API 地址 |
 | `EYES_API` | `http://127.0.0.1:9531` | OCR API 地址 |
 | `VIVID_CALIBRATION_PROMPTS_FILE` | `./configs/calibration/prompts.json` | 校准提示词文件 |

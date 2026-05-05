@@ -57,12 +57,18 @@ default_prompt: |
 
   Bilibili rule:
   - Bilibili still follows the direct media download flow, not official-subtitle priority
-  - start with the anonymous/helper flow first; it can auto-fill anonymous fingerprint cookies
-  - if Bilibili returns -101, account-not-logged-in, or login-required errors, ask for a temporary full Bilibili cookie first via -BiliCookie / --bili-cookie or VIVID_BILI_COOKIE
+  - start with the anonymous/helper flow first; it can auto-fill anonymous request identity fields including _uuid, b_lsid, b_nut, buvid3, buvid4, and buvid_fp
+  - the helper owns those anonymous identity fields in the Bili23 style; stale values from a full cookie may be refreshed instead of preserved
+  - the helper writes base login cookies first, then refreshes anonymous identity fields
+  - the helper also tries to fetch bili_ticket and activate ExClimbWuzhi; those enhancement failures alone are not login failures
+  - common Bilibili URL forms include BV, av, ep, ss, and md
+  - helper download selection validates CDN candidates before GET and skips text or tiny error responses when possible
+  - if Bilibili returns -101, account-not-logged-in, or login-required errors, ask for an explicit full Bilibili cookie first via -BiliCookie / --bili-cookie or VIVID_BILI_COOKIE
+  - when a user explicitly provides a full Bilibili cookie through -BiliCookie / --bili-cookie or the Web UI, the Vivid app may persist it in the project-local configs/secrets/bilibili_cookie.json file
   - use Sessdata only as a compatibility fallback when the user cannot provide a full cookie
-  - do not suggest persisting Cookie or Sessdata in skill_state.json or any other file
+  - do not write Cookie or Sessdata into skill_state.json, prompts, logs, or any non-secret file; never echo persisted cookie file contents
 
   State file must contain only non-sensitive defaults such as repo_root, default_whisper_model, default_data_dir, execution_mode, artifact_target, cloud_profile, cloud_base_url.
-  Never write Cookie, Sessdata, token, or API key values into files, prompts, or logs.
+  Never write Cookie, Sessdata, token, or API key values into skill files, prompts, or logs.
 
   If the task later involves embedding, RAG, or knowledge-base ingestion, prefer vector_source/ instead of reverse-parsing quickread.md.

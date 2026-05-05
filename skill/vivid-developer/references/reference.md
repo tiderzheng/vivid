@@ -212,6 +212,8 @@ class BilibiliAdapter:
 ```
 Delegates to `tools/bilibili/bili23_agent_cli.py`. Requires ffmpeg.
 
+Bilibili rule updates generally belong in the helper, not the adapter. Compare behavior against `bili23/Bili23-Downloader`, keep the adapter subprocess contract stable unless wrapper arguments or error classification need to change, and cover helper behavior in `tests/test_download_adapters.py`.
+
 ### `DouyinAdapter` (`app/adapters/douyin.py`)
 ```python
 class DouyinAdapter:

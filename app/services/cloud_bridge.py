@@ -66,13 +66,18 @@ def run_cloud_quickread(args, settings) -> dict[str, Any]:
         "vision_sample_ms": args.vision_sample_ms or "",
         "vision_min_duration_ms": args.vision_min_duration_ms or "",
     }
-    bili_cookie = _optional_text(getattr(args, "bili_cookie", None))
-    sessdata = _optional_text(getattr(args, "sessdata", None))
+    suppress_sessdata = bool(getattr(args, "no_sessdata", False))
+    bili_cookie = _optional_text(getattr(args, "bili_cookie", None)) or _optional_text(getattr(settings, "bili_cookie", None))
+    sessdata = (
+        None
+        if suppress_sessdata
+        else _optional_text(getattr(args, "sessdata", None)) or _optional_text(getattr(settings, "sessdata", None))
+    )
     if bili_cookie:
         payload["bili_cookie"] = bili_cookie
     if sessdata:
         payload["sessdata"] = sessdata
-    if bool(getattr(args, "no_sessdata", False)):
+    if suppress_sessdata:
         payload["no_sessdata"] = True
 
     with requests.Session() as session:

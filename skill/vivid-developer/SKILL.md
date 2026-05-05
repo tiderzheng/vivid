@@ -182,6 +182,7 @@ log_exception("event_name", exc, key=value)
 |------|-------|---------|
 | New pipeline stage | `app/pipeline/orchestrator.py` | Insert after summarization, follow calibrate pattern |
 | New platform | `app/adapters/` | Implement `download_media()` + `get_video_title()` |
+| Bilibili rule change | `tools/bilibili/bili23_agent_cli.py` | Compare against `bili23/Bili23-Downloader`; keep `app/adapters/bilibili.py` CLI contract stable unless wrapper args change |
 | New LLM provider | `configs/summary/providers.json` | JSON entry + env var |
 | New summary/calibration prompt | `configs/{summary,calibration}/prompts.json` | `{id, name, system_prompt, user_prompt_template}` |
 | New output file | `app/services/artifact_writer.py` | `_write_text()` + ArtifactBundle field |
@@ -274,6 +275,8 @@ else:
 7. **Web UI is a single file** — `app/web.py` contains the entire app: API routes, JobManager, inline HTML/CSS/JS. The HTML is inside a Python string returned by `_render_index()`.
 
 8. **No formatter/linter** — the repo has no configured formatter. Match surrounding code style manually.
+
+9. **Bilibili compatibility lives in the helper** — compare rule changes against `bili23/Bili23-Downloader`, then update `tools/bilibili/bili23_agent_cli.py` with regression coverage in `tests/test_download_adapters.py`. Do not use `tools/Bili23-Downloader` as the reference source; that path is not the maintained upstream checkout. Do not change `app/adapters/bilibili.py` unless the helper CLI contract or adapter-level error mapping must change.
 
 ## References
 

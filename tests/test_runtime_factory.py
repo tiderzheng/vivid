@@ -1,7 +1,8 @@
 from pathlib import Path
 
-from app.config import Settings
+from app.config import Settings, load_settings
 from app.runtime_factory import build_runtime_options
+from app.services.bili_cookie_store import save_bili_cookie
 
 
 def _build_settings(tmp_path: Path) -> Settings:
@@ -58,12 +59,36 @@ def test_load_settings_reads_bili_cookie_and_sessdata_env(monkeypatch):
     monkeypatch.setenv("VIVID_BILI_COOKIE", "cookie-from-env")
     monkeypatch.setenv("BILI_SESSDATA", "sessdata-from-env")
 
-    from app.config import load_settings
-
     settings = load_settings()
 
     assert settings.bili_cookie == "cookie-from-env"
     assert settings.sessdata == "sessdata-from-env"
+
+
+def test_load_settings_reads_persisted_bili_cookie_when_env_missing(monkeypatch, tmp_path):
+    monkeypatch.delenv("VIVID_BILI_COOKIE", raising=False)
+    monkeypatch.delenv("BILI_SESSDATA", raising=False)
+    import app.config as config
+
+    monkeypatch.setattr(config, "__file__", str(tmp_path / "app" / "config.py"))
+    save_bili_cookie(tmp_path, "SESSDATA=persisted; bili_jct=token", source="test")
+
+    settings = config.load_settings()
+
+    assert settings.repo_root == tmp_path
+    assert settings.bili_cookie == "SESSDATA=persisted; bili_jct=token"
+
+
+def test_load_settings_prefers_env_bili_cookie_over_persisted_cookie(monkeypatch, tmp_path):
+    monkeypatch.setenv("VIVID_BILI_COOKIE", "SESSDATA=env; bili_jct=token")
+    import app.config as config
+
+    monkeypatch.setattr(config, "__file__", str(tmp_path / "app" / "config.py"))
+    save_bili_cookie(tmp_path, "SESSDATA=persisted; bili_jct=token", source="test")
+
+    settings = config.load_settings()
+
+    assert settings.bili_cookie == "SESSDATA=env; bili_jct=token"
 
 
 def test_runtime_factory_prefers_explicit_bili_cookie_over_sessdata_sources(tmp_path):

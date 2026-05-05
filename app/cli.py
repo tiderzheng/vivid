@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 
 from .config import load_settings
 from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
+from .services.bili_cookie_store import save_bili_cookie
 from .services.dependency_bootstrap import ensure_opencv_dependency
 
 
@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
     parser.add_argument("--sessdata", help=argparse.SUPPRESS)
     parser.add_argument("--no-sessdata", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--bili-cookie", default=os.environ.get("VIVID_BILI_COOKIE"), help="Bilibili cookie for helper auth")
+    parser.add_argument("--bili-cookie", help="Bilibili cookie for helper auth")
     parser.add_argument("--ffmpeg-bin", help="Override ffmpeg executable path")
     parser.add_argument("--whisper-root", help="Override local whisper package root")
     parser.add_argument("--ears4-api", help="Override Ears4 base URL")
@@ -103,6 +103,7 @@ def main() -> int:
     args = parser.parse_args()
     ensure_opencv_dependency(raise_on_failure=False)
     settings = load_settings()
+    _persist_bili_cookie_if_present(settings.repo_root, args.bili_cookie, source="cli")
     transcription_extract_audio = settings.transcription_extract_audio
     acquisition_mode = args.acquisition_mode or settings.acquisition_mode
     if args.prefer_ocr:
@@ -187,6 +188,15 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"[error] {exc}")
         return 1
+
+
+def _persist_bili_cookie_if_present(repo_root, bili_cookie: str | None, *, source: str) -> None:
+    if not bili_cookie:
+        return
+    try:
+        save_bili_cookie(repo_root, bili_cookie, source=source)
+    except (OSError, ValueError):
+        return
 
 
 if __name__ == "__main__":

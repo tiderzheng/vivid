@@ -388,6 +388,16 @@ def test_web_quickread_collects_bili_cookie_without_echoing_it(tmp_path, monkeyp
 
     monkeypatch.setattr("app.web.build_runtime_options", fake_build_runtime_options)
     monkeypatch.setattr(
+        "app.web.save_bili_cookie",
+        lambda repo_root, cookie, source="unknown": captured.update(
+            {
+                "saved_repo_root": repo_root,
+                "saved_cookie": cookie,
+                "saved_source": source,
+            }
+        ),
+    )
+    monkeypatch.setattr(
         "app.web.run_quickread",
         lambda _options: OrchestratorResult(
             source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
@@ -417,6 +427,9 @@ def test_web_quickread_collects_bili_cookie_without_echoing_it(tmp_path, monkeyp
 
     assert response.status_code == 200
     assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_repo_root"] == tmp_path
+    assert captured["saved_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_source"] == "web"
     assert "bili_cookie" not in response.text
 
 
@@ -490,6 +503,16 @@ def test_web_jobs_request_omits_bili_cookie_from_history(tmp_path, monkeypatch):
 
     monkeypatch.setattr("app.web.build_runtime_options", fake_build_runtime_options)
     monkeypatch.setattr(
+        "app.web.save_bili_cookie",
+        lambda repo_root, cookie, source="unknown": captured.update(
+            {
+                "saved_repo_root": repo_root,
+                "saved_cookie": cookie,
+                "saved_source": source,
+            }
+        ),
+    )
+    monkeypatch.setattr(
         "app.web._invoke_run_quickread",
         lambda *_args, **_kwargs: OrchestratorResult(
             source=SourceInfo(raw_source="https://www.bilibili.com/video/BV1xx", platform="bilibili", title="demo"),
@@ -519,6 +542,9 @@ def test_web_jobs_request_omits_bili_cookie_from_history(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert captured["values"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_repo_root"] == tmp_path
+    assert captured["saved_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_source"] == "web"
     job = response.json()["job"]
     assert "bili_cookie" not in job["request"]
 
@@ -536,6 +562,16 @@ def test_web_retry_job_forwards_auth_overrides(tmp_path, monkeypatch):
             return {"job_id": "new-job"}
 
     monkeypatch.setattr("app.web.get_job_manager", lambda _settings: FakeManager())
+    monkeypatch.setattr(
+        "app.web.save_bili_cookie",
+        lambda repo_root, cookie, source="unknown": captured.update(
+            {
+                "saved_repo_root": repo_root,
+                "saved_cookie": cookie,
+                "saved_source": source,
+            }
+        ),
+    )
     client = TestClient(app)
 
     response = client.post(
@@ -554,6 +590,9 @@ def test_web_retry_job_forwards_auth_overrides(tmp_path, monkeypatch):
         "bili_cookie": "SESSDATA=demo; bili_jct=token",
         "no_sessdata": True,
     }
+    assert captured["saved_repo_root"] == tmp_path
+    assert captured["saved_cookie"] == "SESSDATA=demo; bili_jct=token"
+    assert captured["saved_source"] == "web-retry"
 
 
 def test_web_quickread_requires_source(tmp_path, monkeypatch):

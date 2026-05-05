@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Streamin
 from .config import Settings, load_settings
 from .pipeline.orchestrator import OrchestratorResult, run_quickread
 from .runtime_factory import build_runtime_options
+from .services.bili_cookie_store import save_bili_cookie
 from .services.dependency_bootstrap import ensure_opencv_dependency
 from .services.diagnostics import build_error_summary, extract_failure_chain
 from .services.run_state import (
@@ -532,7 +533,7 @@ async def retry_job(job_id: str, request: Request) -> dict[str, Any]:
     settings = load_settings()
     manager = get_job_manager(settings)
     try:
-        job = manager.retry(settings, job_id, overrides=await _collect_retry_overrides(request))
+        job = manager.retry(settings, job_id, overrides=await _collect_retry_overrides(request, settings))
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
     except FileNotFoundError as exc:
@@ -738,10 +739,12 @@ async def _collect_request_payloads(request: Request, settings: Settings) -> lis
 def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any]:
     preferred_output_dir = load_preferred_output_dir(settings)
     preferred_vision_openai = load_preferred_vision_openai(settings)
+    bili_cookie = _clean_form_value(form.get("bili_cookie"))
+    _persist_bili_cookie_if_present(settings.repo_root, bili_cookie, source="web")
     values = {
         "project_name": _clean_form_value(form.get("project_name")),
         "data_dir": _clean_form_value(form.get("data_dir")) or str(preferred_output_dir or settings.data_dir),
-        "bili_cookie": _clean_form_value(form.get("bili_cookie")),
+        "bili_cookie": bili_cookie,
         "output_format": _clean_form_value(form.get("output_format")),
         "whisper_model": _clean_form_value(form.get("whisper_model")),
         "forced_platform": _clean_form_value(form.get("platform")),
@@ -773,7 +776,7 @@ def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any
     return values
 
 
-async def _collect_retry_overrides(request: Request) -> dict[str, Any]:
+async def _collect_retry_overrides(request: Request, settings: Settings | None = None) -> dict[str, Any]:
     content_type = request.headers.get("content-type", "")
     payload: Any
     if "application/json" in content_type:
@@ -786,12 +789,23 @@ async def _collect_retry_overrides(request: Request) -> dict[str, Any]:
     bili_cookie = _clean_form_value(payload.get("bili_cookie"))
     if bili_cookie:
         overrides["bili_cookie"] = bili_cookie
+        if settings is not None:
+            _persist_bili_cookie_if_present(settings.repo_root, bili_cookie, source="web-retry")
     sessdata = _clean_form_value(payload.get("sessdata"))
     if sessdata:
         overrides["sessdata"] = sessdata
     if _bool_value(payload.get("no_sessdata")):
         overrides["no_sessdata"] = True
     return overrides
+
+
+def _persist_bili_cookie_if_present(repo_root: Path, bili_cookie: str | None, *, source: str) -> None:
+    if not bili_cookie:
+        return
+    try:
+        save_bili_cookie(repo_root, bili_cookie, source=source)
+    except (OSError, ValueError):
+        return
 
 
 def _collect_sources_from_form(form: Any) -> list[str]:

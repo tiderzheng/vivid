@@ -168,7 +168,7 @@ def test_run_cloud_quickread_forwards_bilibili_auth_inputs_to_remote(tmp_path, m
             "vision_min_duration_ms": None,
             "bili_cookie": "SESSDATA=demo; bili_jct=token",
             "sessdata": "expired",
-            "no_sessdata": True,
+            "no_sessdata": False,
             "artifact_target": "both",
             "cloud_profile": None,
             "cloud_base_url": "https://cloud.example",
@@ -180,8 +180,142 @@ def test_run_cloud_quickread_forwards_bilibili_auth_inputs_to_remote(tmp_path, m
     assert "data_dir" not in captured["data"]
     assert captured["data"]["bili_cookie"] == "SESSDATA=demo; bili_jct=token"
     assert captured["data"]["sessdata"] == "expired"
-    assert captured["data"]["no_sessdata"] is True
+    assert "no_sessdata" not in captured["data"]
     assert payload["files"]["workdir"].endswith("local-sync\\demo")
+
+
+def test_run_cloud_quickread_uses_settings_bilibili_auth_when_args_missing(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return _remote_payload()
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, data, timeout):
+            captured["url"] = url
+            captured["data"] = dict(data)
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.cloud_bridge.requests.Session", lambda: FakeSession())
+    monkeypatch.setattr(
+        "app.services.cloud_bridge.sync_cloud_result_files",
+        lambda base_url, payload, local_data_dir, artifact_target: {"base_url": base_url},
+    )
+
+    settings = type(
+        "Settings",
+        (),
+        {
+            "data_dir": tmp_path / "default-data",
+            "bili_cookie": "SESSDATA=settings; bili_jct=token",
+            "sessdata": "settings-sessdata",
+        },
+    )()
+    args = type(
+        "Args",
+        (),
+        {
+            "source": "https://example.com/video",
+            "project_name": None,
+            "platform": None,
+            "model": None,
+            "data_dir": None,
+            "acquisition_mode": None,
+            "transcription_backend": None,
+            "vision_backend": None,
+            "vision_api_config_id": None,
+            "vision_timeout": None,
+            "vision_sample_ms": None,
+            "vision_min_duration_ms": None,
+            "bili_cookie": None,
+            "sessdata": None,
+            "no_sessdata": False,
+            "artifact_target": "cloud_only",
+            "cloud_profile": None,
+            "cloud_base_url": "https://cloud.example",
+        },
+    )()
+
+    run_cloud_quickread(args, settings)
+
+    assert captured["data"]["bili_cookie"] == "SESSDATA=settings; bili_jct=token"
+    assert captured["data"]["sessdata"] == "settings-sessdata"
+
+
+def test_run_cloud_quickread_no_sessdata_skips_settings_sessdata_fallback(tmp_path, monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return _remote_payload()
+
+    class FakeSession:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, data, timeout):
+            captured["data"] = dict(data)
+            return FakeResponse()
+
+    monkeypatch.setattr("app.services.cloud_bridge.requests.Session", lambda: FakeSession())
+    monkeypatch.setattr(
+        "app.services.cloud_bridge.sync_cloud_result_files",
+        lambda base_url, payload, local_data_dir, artifact_target: {"base_url": base_url},
+    )
+
+    settings = type(
+        "Settings",
+        (),
+        {
+            "data_dir": tmp_path / "default-data",
+            "bili_cookie": "SESSDATA=settings; bili_jct=token",
+            "sessdata": "settings-sessdata",
+        },
+    )()
+    args = type(
+        "Args",
+        (),
+        {
+            "source": "https://example.com/video",
+            "project_name": None,
+            "platform": None,
+            "model": None,
+            "data_dir": None,
+            "acquisition_mode": None,
+            "transcription_backend": None,
+            "vision_backend": None,
+            "vision_api_config_id": None,
+            "vision_timeout": None,
+            "vision_sample_ms": None,
+            "vision_min_duration_ms": None,
+            "bili_cookie": None,
+            "sessdata": None,
+            "no_sessdata": True,
+            "artifact_target": "cloud_only",
+            "cloud_profile": None,
+            "cloud_base_url": "https://cloud.example",
+        },
+    )()
+
+    run_cloud_quickread(args, settings)
+
+    assert captured["data"]["bili_cookie"] == "SESSDATA=settings; bili_jct=token"
+    assert "sessdata" not in captured["data"]
+    assert captured["data"]["no_sessdata"] is True
 
 
 def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, monkeypatch):
@@ -231,7 +365,7 @@ def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, 
             "vision_min_duration_ms": None,
             "bili_cookie": "SESSDATA=profile-cookie",
             "sessdata": "expired",
-            "no_sessdata": True,
+            "no_sessdata": False,
             "artifact_target": "cloud_only",
             "cloud_profile": "prod",
             "cloud_base_url": None,
@@ -244,4 +378,4 @@ def test_run_cloud_quickread_resolves_base_url_from_cloud_profile_env(tmp_path, 
     assert captured["url"] == "https://profile.example/api/quickread"
     assert captured["data"]["bili_cookie"] == "SESSDATA=profile-cookie"
     assert captured["data"]["sessdata"] == "expired"
-    assert captured["data"]["no_sessdata"] is True
+    assert "no_sessdata" not in captured["data"]

@@ -475,6 +475,8 @@ OCR 默认也由 **瞬知** 自己配置。
 - `BILI_SESSDATA` - 兼容旧配置的 SESSDATA 回退值
 - `VIVID_DOUYIN_SCRIPT` - 自定义Douyin下载器路径
 
+当用户通过 CLI/Web 显式提供完整 Bilibili Cookie 时，Vivid 会保存到项目目录 `configs/secrets/bilibili_cookie.json`，该目录已被 `.gitignore` 忽略。运行时优先级为显式参数、`VIVID_BILI_COOKIE`、本地 secret 文件、旧 `SESSDATA` 回退、匿名指纹模式。
+
 ## skill 怎么理解
 
 `vivid-operator` 是统一 skill。
