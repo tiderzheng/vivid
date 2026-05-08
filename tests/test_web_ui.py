@@ -41,7 +41,7 @@ def _build_settings(tmp_path: Path) -> Settings:
         llm_max_chars=8000,
         siliconflow_base_url="https://api.siliconflow.cn/v1/chat/completions",
         dashscope_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
-        siliconflow_model="model-a",
+        siliconflow_model=None,
         dashscope_model="model-b",
         siliconflow_api_key=None,
         dashscope_api_key=None,
@@ -81,6 +81,13 @@ def _write_config_files(settings: Settings) -> None:
         '{"items":[{"id":"preset-1","name":"默认","model":"base","device":"auto","task":"transcribe","extract_audio":true}],"selected_id":"preset-1"}',
         encoding="utf-8",
     )
+    summary_providers_path = settings.repo_root / "configs" / "summary" / "providers.json"
+    summary_providers_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_providers_path.write_text(
+        '{"items":[{"id":"siliconflow","name":"SiliconFlow","base_url":"https://summary.example.com/v1/chat/completions","model":"summary-model","api_key_env":"SUMMARY_API_KEY","enabled":true}],"selected_id":"siliconflow"}',
+        encoding="utf-8",
+    )
+    settings.summary_providers_path = summary_providers_path
 
 
 def test_web_index_renders(tmp_path, monkeypatch):
@@ -136,9 +143,31 @@ def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
     assert payload["dependencies"]["opencv"]["package"] == "opencv-python"
     assert payload["stats"]["queued"] == 0
     assert payload["defaults"]["data_dir"] == str(settings.data_dir)
+    assert payload["defaults"]["summary_api_base"] == "https://summary.example.com/v1/chat/completions"
+    assert payload["defaults"]["summary_model"] == "summary-model"
     assert "sessdata" not in payload["defaults"]
     assert "no_sessdata" not in payload["defaults"]
     assert "bili_cookie" not in payload["defaults"]
+
+
+def test_web_bootstrap_summary_defaults_prefer_settings_over_provider_file(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    settings.siliconflow_base_url = "https://env-summary.example.com/v1/chat/completions"
+    settings.siliconflow_model = "env-summary-model"
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    monkeypatch.setattr(
+        "app.web.ensure_opencv_dependency",
+        lambda raise_on_failure=False: {"ok": True, "package": "opencv-python", "installed": False},
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/bootstrap")
+
+    assert response.status_code == 200
+    defaults = response.json()["defaults"]
+    assert defaults["summary_api_base"] == "https://env-summary.example.com/v1/chat/completions"
+    assert defaults["summary_model"] == "env-summary-model"
 
 
 def test_web_default_output_dir_can_be_saved(tmp_path, monkeypatch):
@@ -197,6 +226,34 @@ def test_web_default_vision_openai_can_be_saved(tmp_path, monkeypatch):
     assert defaults["vision_api_key"] == "sk-test"
     assert defaults["vision_model"] == "demo-vl"
     assert defaults["vision_prompt"] == "只返回字幕"
+
+
+def test_web_default_summary_openai_can_be_saved(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/preferences/summary-openai",
+        data={
+            "summary_api_base": "https://llm.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "demo-summary-model",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["summary_model"] == "demo-summary-model"
+
+    bootstrap_response = client.get("/api/bootstrap")
+    assert bootstrap_response.status_code == 200
+    defaults = bootstrap_response.json()["defaults"]
+    assert defaults["summary_api_base"] == "https://llm.example.com/v1/chat/completions"
+    assert defaults["summary_api_key"] == "sk-summary"
+    assert defaults["summary_model"] == "demo-summary-model"
 
 
 def test_web_quickread_upload_works(tmp_path, monkeypatch):
@@ -888,6 +945,86 @@ def test_web_job_retry_delete_and_open_folder(tmp_path, monkeypatch):
     assert missing_response.status_code == 404
 
 
+def test_web_job_retry_preserves_summary_api_key_without_exposing_it(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    captured_keys = []
+
+    def fake_run(options):
+        captured_keys.append(options.siliconflow_api_key)
+        workdir = settings.data_dir / f"summary-key-{len(captured_keys)}"
+        artifacts_dir = workdir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        bundle = ArtifactBundle(
+            workdir=workdir,
+            artifacts_dir=artifacts_dir,
+            quickread_markdown=artifacts_dir / "quickread.md",
+            transcript_text=artifacts_dir / "transcript.txt",
+            summary_markdown=artifacts_dir / "summary.md",
+            summary_json=artifacts_dir / "summary.json",
+            metadata_json=artifacts_dir / "metadata.json",
+        )
+        for path in [
+            bundle.quickread_markdown,
+            bundle.transcript_text,
+            bundle.summary_markdown,
+            bundle.summary_json,
+            bundle.metadata_json,
+        ]:
+            path.write_text("ok", encoding="utf-8")
+        return OrchestratorResult(
+            source=SourceInfo(raw_source=options.source, platform="local", title="summary-key"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=bundle,
+            rendered="rendered",
+        )
+
+    monkeypatch.setattr("app.web.run_quickread", fake_run)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/api/jobs",
+        data={
+            "source_url": "https://example.com/demo",
+            "summary_api_base": "https://llm.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "demo-summary-model",
+        },
+    )
+    assert create_response.status_code == 200
+    first_job_id = create_response.json()["job"]["job_id"]
+
+    first_job = None
+    for _ in range(40):
+        response = client.get(f"/api/jobs/{first_job_id}")
+        first_job = response.json()["job"]
+        if first_job["status"] == "completed":
+            break
+        time.sleep(0.05)
+    assert first_job is not None
+    assert first_job["status"] == "completed"
+    assert "summary_api_key" not in first_job["request"]
+
+    retry_response = client.post(f"/api/jobs/{first_job_id}/retry")
+    assert retry_response.status_code == 200
+    second_job_id = retry_response.json()["job"]["job_id"]
+
+    second_job = None
+    for _ in range(40):
+        response = client.get(f"/api/jobs/{second_job_id}")
+        second_job = response.json()["job"]
+        if second_job["status"] == "completed":
+            break
+        time.sleep(0.05)
+    assert second_job is not None
+    assert second_job["status"] == "completed"
+    assert "summary_api_key" not in second_job["request"]
+    assert captured_keys == ["sk-summary", "sk-summary"]
+
+
 def test_build_open_folder_command_cross_platform(monkeypatch, tmp_path):
     folder = tmp_path
     monkeypatch.setattr("app.web.sys.platform", "win32")
@@ -1264,8 +1401,10 @@ def test_web_job_continue_from_summarize(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     _write_config_files(settings)
     monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured_keys = []
 
     def fake_run(options, event_callback=None):
+        captured_keys.append(options.siliconflow_api_key)
         if not options.resume_stage:
             workdir = settings.data_dir / "continue-demo"
             if event_callback:
@@ -1330,7 +1469,14 @@ def test_web_job_continue_from_summarize(tmp_path, monkeypatch):
 
     create_response = client.post(
         "/api/jobs",
-        data={"source_url": "https://example.com/demo", "project_name": "continue-demo", "platform": "douyin"},
+        data={
+            "source_url": "https://example.com/demo",
+            "project_name": "continue-demo",
+            "platform": "douyin",
+            "summary_api_base": "https://llm.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "demo-summary-model",
+        },
     )
     assert create_response.status_code == 200
     failed_job_id = create_response.json()["job"]["job_id"]
@@ -1366,6 +1512,9 @@ def test_web_job_continue_from_summarize(tmp_path, monkeypatch):
 
     assert resumed_job is not None
     assert resumed_job["status"] == "completed"
+    assert "summary_api_key" not in failed_job["request"]
+    assert "summary_api_key" not in resumed_job["request"]
+    assert captured_keys == ["sk-summary", "sk-summary"]
 
 
 def test_web_job_exposes_failure_chain(tmp_path, monkeypatch):

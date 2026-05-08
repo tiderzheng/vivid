@@ -63,11 +63,15 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
         transcribe_timeout=_int_or_default(values.get("transcribe_timeout"), settings.transcribe_timeout),
         ocr_timeout=_int_or_default(values.get("ocr_timeout"), settings.ocr_timeout),
         llm_max_chars=_int_or_default(values.get("llm_max_chars"), settings.llm_max_chars),
-        siliconflow_api_key=settings.siliconflow_api_key,
+        siliconflow_api_key=_text_or_none(values.get("summary_api_key")) or settings.siliconflow_api_key,
         dashscope_api_key=settings.dashscope_api_key,
-        siliconflow_base_url=settings.siliconflow_base_url,
+        siliconflow_base_url=_text_or_none(values.get("summary_api_base")) or settings.siliconflow_base_url,
         dashscope_base_url=settings.dashscope_base_url,
-        siliconflow_model=_text_or_none(values.get("siliconflow_model")) or settings.siliconflow_model,
+        siliconflow_model=(
+            _text_or_none(values.get("summary_model"))
+            or _text_or_none(values.get("siliconflow_model"))
+            or settings.siliconflow_model
+        ),
         dashscope_model=_text_or_none(values.get("dashscope_model")) or settings.dashscope_model,
         bili_script=_coerce_path(values.get("bili_script")) or settings.bili_script,
         douyin_script=_coerce_path(values.get("douyin_script")) or settings.douyin_script,

@@ -21,6 +21,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import Settings, load_settings
+from .constants import DEFAULT_SILICONFLOW_BASE
 from .pipeline.orchestrator import OrchestratorResult, run_quickread
 from .runtime_factory import build_runtime_options
 from .services.bili_auth import (
@@ -40,6 +41,7 @@ from .services.run_state import (
     load_run_state,
     suggested_resume_stage as checkpoint_suggested_resume_stage,
 )
+from .subsystems.summary.store import load_summary_provider_store
 from .subsystems.transcription.store import load_transcription_store
 from .subsystems.vision.store import load_vision_store
 
@@ -95,6 +97,7 @@ class WebJobRecord:
         can_continue_without_sessdata: bool = False,
     ) -> dict[str, Any]:
         payload = asdict(self)
+        payload["request"] = _public_request(payload.get("request") or {})
         payload["queue_position"] = queue_position
         payload["can_cancel"] = can_cancel
         payload["can_retry"] = can_retry
@@ -157,7 +160,7 @@ class WebJobManager:
             created_at=now,
             updated_at=now,
             source=source,
-            request=_public_request(values),
+            request=_stored_request(values),
             project_name=_text_or_none(values.get("project_name")),
             workdir=_text_or_none(values.get("resume_workdir")),
             events=[_build_event("queued", "任务已创建并进入队列", {"source": source})],
@@ -166,7 +169,7 @@ class WebJobManager:
             self.records[job_id] = record
             self.order.append(job_id)
             self._save_locked()
-        self.executor.submit(self._run_job, settings, job_id, values)
+        self.executor.submit(self._run_job, settings, job_id, values, _invoke_run_quickread, run_quickread)
         with self.lock:
             return self._record_to_dict(self.records[job_id])
 
@@ -254,7 +257,14 @@ class WebJobManager:
             _delete_job_files(settings, record)
         return record.to_dict()
 
-    def _run_job(self, settings: Settings, job_id: str, values: dict[str, Any]) -> None:
+    def _run_job(
+        self,
+        settings: Settings,
+        job_id: str,
+        values: dict[str, Any],
+        runner_invoker,
+        runner,
+    ) -> None:
         started_at = _now_iso()
         started_perf = time.perf_counter()
         with self.lock:
@@ -281,7 +291,7 @@ class WebJobManager:
                 message="正在采集、转录和总结内容",
                 updated_at=_now_iso(),
             )
-            result = _invoke_run_quickread(options, self._make_event_callback(job_id))
+            result = runner_invoker(runner, options, self._make_event_callback(job_id))
             finished_at = _now_iso()
             self._update(
                 job_id,
@@ -436,7 +446,7 @@ class WebJobManager:
 
     def _save_locked(self) -> None:
         self.history_path.parent.mkdir(parents=True, exist_ok=True)
-        data = [self.records[job_id].to_dict() for job_id in self.order if job_id in self.records]
+        data = [asdict(self.records[job_id]) for job_id in self.order if job_id in self.records]
         self.history_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
@@ -479,10 +489,16 @@ async def bootstrap() -> dict[str, Any]:
     manager = get_job_manager(settings)
     preferred_output_dir = load_preferred_output_dir(settings)
     preferred_vision_openai = load_preferred_vision_openai(settings)
+    preferred_summary_openai = load_preferred_summary_openai(settings)
     dependency_status = ensure_opencv_dependency(raise_on_failure=False)
     return {
         "ok": True,
-        "defaults": _settings_defaults(settings, preferred_output_dir, preferred_vision_openai),
+        "defaults": _settings_defaults(
+            settings,
+            preferred_output_dir,
+            preferred_vision_openai,
+            preferred_summary_openai,
+        ),
         "options": _options_payload(settings),
         "dependencies": {"opencv": dependency_status},
         "stats": manager.stats(),
@@ -756,6 +772,23 @@ async def set_default_vision_openai(request: Request) -> dict[str, Any]:
     return {"ok": True, **payload}
 
 
+@app.post("/api/preferences/summary-openai")
+async def set_default_summary_openai(request: Request) -> dict[str, Any]:
+    settings = load_settings()
+    form = await request.form()
+    payload = {
+        "summary_api_base": _clean_form_value(form.get("summary_api_base")),
+        "summary_api_key": _clean_form_value(form.get("summary_api_key")),
+        "summary_model": _clean_form_value(form.get("summary_model")),
+    }
+    if not payload["summary_api_base"]:
+        raise HTTPException(status_code=400, detail="summary_api_base is required")
+    if not payload["summary_model"]:
+        raise HTTPException(status_code=400, detail="summary_model is required")
+    save_preferred_summary_openai(settings, payload)
+    return {"ok": True, **payload}
+
+
 async def _collect_request_values(request: Request, settings: Settings) -> dict[str, Any]:
     payloads = await _collect_request_payloads(request, settings)
     if len(payloads) != 1:
@@ -783,6 +816,7 @@ async def _collect_request_payloads(request: Request, settings: Settings) -> lis
 def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any]:
     preferred_output_dir = load_preferred_output_dir(settings)
     preferred_vision_openai = load_preferred_vision_openai(settings)
+    preferred_summary_openai = load_preferred_summary_openai(settings)
     bili_cookie = _clean_form_value(form.get("bili_cookie"))
     _persist_bili_cookie_if_present(settings.repo_root, bili_cookie, source="web")
     values = {
@@ -810,6 +844,9 @@ def _collect_base_request_values(form: Any, settings: Settings) -> dict[str, Any
         "vision_timeout": _clean_form_value(form.get("vision_timeout")) or preferred_vision_openai.get("vision_timeout"),
         "vision_sample_ms": _clean_form_value(form.get("vision_sample_ms")),
         "vision_min_duration_ms": _clean_form_value(form.get("vision_min_duration_ms")),
+        "summary_api_base": _clean_form_value(form.get("summary_api_base")) or preferred_summary_openai.get("summary_api_base"),
+        "summary_api_key": _clean_form_value(form.get("summary_api_key")) or preferred_summary_openai.get("summary_api_key"),
+        "summary_model": _clean_form_value(form.get("summary_model")) or preferred_summary_openai.get("summary_model"),
         "prefer_ocr": _bool_value(form.get("prefer_ocr")),
         "force_ocr": _bool_value(form.get("force_ocr")),
         "no_keep_files": _checkbox_to_no_keep_files(form),
@@ -892,11 +929,17 @@ def _settings_defaults(
     settings: Settings,
     preferred_output_dir: Path | None = None,
     preferred_vision_openai: dict[str, Any] | None = None,
+    preferred_summary_openai: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     preferred_vision_openai = preferred_vision_openai or {}
+    preferred_summary_openai = preferred_summary_openai or {}
     vision_store = load_vision_store(settings.vision_api_configs_path, settings.vision_prompts_path)
     selected_config = vision_store.get_api_config(settings.vision_api_config_id)
     selected_prompt = vision_store.get_prompt(settings.vision_prompt_id)
+    selected_summary_provider = _selected_summary_provider_defaults(settings)
+    summary_api_base = selected_summary_provider.get("summary_api_base")
+    if settings.siliconflow_base_url != DEFAULT_SILICONFLOW_BASE:
+        summary_api_base = settings.siliconflow_base_url
     return {
         "data_dir": str(preferred_output_dir or settings.data_dir),
         "output_format": settings.default_format,
@@ -919,7 +962,26 @@ def _settings_defaults(
         "vision_system_prompt": preferred_vision_openai.get("vision_system_prompt") or (selected_config.system_prompt if selected_config else settings.vision_system_prompt),
         "vision_sample_ms": settings.vision_sample_ms,
         "vision_min_duration_ms": settings.vision_min_duration_ms,
+        "summary_api_base": preferred_summary_openai.get("summary_api_base") or summary_api_base or settings.siliconflow_base_url,
+        "summary_api_key": preferred_summary_openai.get("summary_api_key"),
+        "summary_model": (
+            preferred_summary_openai.get("summary_model")
+            or settings.siliconflow_model
+            or selected_summary_provider.get("summary_model")
+        ),
         "keep_files": True,
+    }
+
+
+def _selected_summary_provider_defaults(settings: Settings) -> dict[str, str]:
+    store = load_summary_provider_store(settings.summary_providers_path)
+    providers = store.get_providers()
+    if not providers:
+        return {}
+    provider = providers[0]
+    return {
+        "summary_api_base": provider.base_url,
+        "summary_model": provider.model,
     }
 
 
@@ -984,11 +1046,21 @@ def _public_request(values: dict[str, Any]) -> dict[str, Any]:
         "vision_timeout",
         "vision_sample_ms",
         "vision_min_duration_ms",
+        "summary_api_base",
+        "summary_model",
         "prefer_ocr",
         "force_ocr",
         "no_keep_files",
     ]
     return {key: values.get(key) for key in keys if values.get(key) not in {None, ""}}
+
+
+def _stored_request(values: dict[str, Any]) -> dict[str, Any]:
+    payload = _public_request(values)
+    summary_api_key = _text_or_none(values.get("summary_api_key"))
+    if summary_api_key:
+        payload["summary_api_key"] = summary_api_key
+    return payload
 
 
 def _render_index() -> str:
@@ -999,21 +1071,48 @@ def _render_index() -> str:
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Vivid Web UI</title>
   <style>
-    :root { color-scheme: dark; --bg:#111827; --panel:#1f2937; --muted:#94a3b8; --line:#334155; --text:#e5e7eb; --accent:#38bdf8; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
+    :root { color-scheme: dark; --bg:#101214; --panel:#181b20; --panel-soft:#20242b; --field:#0f1115; --muted:#9ca3af; --line:#30363d; --text:#edf2f7; --accent:#2dd4bf; --accent-strong:#14b8a6; --ok:#22c55e; --warn:#f59e0b; --bad:#ef4444; }
     * { box-sizing:border-box; }
     body { margin:0; font-family:"Segoe UI",system-ui,sans-serif; background:var(--bg); color:var(--text); }
-    .page { padding:20px; display:grid; grid-template-columns:420px 1fr 360px; gap:16px; min-height:100vh; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:16px; overflow:auto; }
+    .page { padding:20px; display:grid; grid-template-columns:minmax(380px,480px) minmax(0,1fr); gap:16px; min-height:100vh; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px; overflow:auto; }
+    .side-stack { display:grid; gap:16px; min-width:0; align-content:start; }
+    .compose-panel { position:sticky; top:20px; max-height:calc(100vh - 40px); }
     h1,h2,h3 { margin:0 0 12px; }
+    h1 { font-size:26px; line-height:1.15; }
+    h2 { font-size:18px; }
+    h3 { font-size:15px; }
     .muted { color:var(--muted); font-size:13px; }
     form { display:grid; gap:12px; }
     label { display:grid; gap:6px; font-size:13px; }
-    input,select,textarea,button { width:100%; border-radius:10px; border:1px solid var(--line); background:#0f172a; color:var(--text); padding:10px 12px; }
-    button { cursor:pointer; background:#0ea5e9; border:none; font-weight:600; }
-    button.secondary { background:#334155; }
+    input,select,textarea,button { width:100%; border-radius:8px; border:1px solid var(--line); background:var(--field); color:var(--text); padding:10px 12px; }
+    textarea { min-height:92px; resize:vertical; }
+    button { cursor:pointer; background:var(--accent-strong); border:none; font-weight:650; }
+    button.secondary { background:#2b3139; }
+    button:hover { filter:brightness(1.06); }
+    .intro { display:grid; gap:6px; margin-bottom:16px; }
+    .primary-flow { display:grid; gap:14px; }
+    .section-heading { display:grid; gap:4px; }
+    .section-heading h2 { margin-bottom:0; }
     .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-    .dropzone { border:1px dashed #64748b; border-radius:12px; padding:16px; text-align:center; background:#0b1220; }
-    .dropzone.dragover { border-color:var(--accent); background:#0c1a2b; }
+    .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+    .dropzone { border:1px dashed #6b7280; border-radius:10px; padding:14px; text-align:center; background:#12161c; }
+    .dropzone.dragover { border-color:var(--accent); background:#10201f; }
+    .source-grid { display:grid; grid-template-columns:1fr; gap:10px; }
+    .quick-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
+    .submit-row { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
+    .accordion-stack { display:grid; gap:8px; margin-top:2px; }
+    details.accordion { border:1px solid var(--line); border-radius:10px; background:#14171c; }
+    details.accordion[open] { background:#161a20; }
+    details.accordion > summary { display:flex; justify-content:space-between; align-items:center; gap:10px; cursor:pointer; padding:12px; list-style:none; }
+    details.accordion > summary::-webkit-details-marker { display:none; }
+    details.accordion > summary::after { content:"展开"; color:var(--muted); font-size:12px; }
+    details.accordion[open] > summary::after { content:"收起"; }
+    .summary-title { display:grid; gap:2px; }
+    .summary-title strong { font-size:13px; }
+    .summary-title span { color:var(--muted); font-size:12px; }
+    .accordion-body { display:grid; gap:12px; padding:0 12px 12px; }
+    .compact-note { border:1px solid var(--line); border-radius:8px; padding:10px; background:#111419; }
     .row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
     .status { display:inline-flex; border-radius:999px; padding:4px 10px; font-size:12px; font-weight:700; }
     .status.queued { background:rgba(245,158,11,.15); color:var(--warn); }
@@ -1022,173 +1121,296 @@ def _render_index() -> str:
     .status.failed { background:rgba(239,68,68,.15); color:var(--bad); }
     .status.cancelled { background:rgba(148,163,184,.15); color:var(--muted); }
     .list { display:grid; gap:10px; }
-    .job-card { border:1px solid var(--line); border-radius:12px; padding:12px; background:#0f172a; cursor:pointer; }
+    .job-card { border:1px solid var(--line); border-radius:8px; padding:12px; background:#13171d; cursor:pointer; min-width:0; }
     .job-card.active { border-color:var(--accent); }
     .job-card.disabled { opacity:.7; }
-    .pre { white-space:pre-wrap; word-break:break-word; border:1px solid var(--line); border-radius:10px; padding:12px; background:#0b1220; }
+    .job-card > .row { min-width:0; }
+    .job-card .status { flex-shrink:0; }
+    .job-title-row { justify-content:flex-start; gap:10px; min-width:0; flex:1; }
+    .job-title { display:block; min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .truncate { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .pre { white-space:pre-wrap; word-break:break-word; border:1px solid var(--line); border-radius:8px; padding:12px; background:#111419; }
     .links { display:flex; flex-wrap:wrap; gap:8px; }
     .links a { color:var(--accent); text-decoration:none; }
     .hint { font-size:12px; color:var(--muted); }
     .toolbar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin:10px 0; }
     .toolbar button { width:auto; padding:8px 12px; }
     .check { width:auto; margin:0; }
-    .auth-panel { border:1px solid var(--line); border-radius:12px; padding:12px; background:#0b1220; display:grid; gap:10px; }
+    .auth-panel { border:1px solid var(--line); border-radius:10px; padding:12px; background:#111419; display:grid; gap:10px; }
     .auth-actions { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-    .qrcode { width:100%; min-height:160px; display:grid; place-items:center; border:1px solid var(--line); border-radius:10px; background:#fff; color:#0f172a; overflow:hidden; }
+    .qrcode { width:100%; min-height:160px; display:grid; place-items:center; border:1px solid var(--line); border-radius:8px; background:#fff; color:#0f172a; overflow:hidden; }
     .qrcode svg { width:150px; height:150px; }
-    .stats { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:12px; }
-    .stat { border:1px solid var(--line); border-radius:10px; padding:10px; background:#0f172a; }
+    .stats { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; margin-bottom:12px; }
+    .stat { border:1px solid var(--line); border-radius:8px; padding:10px; background:#13171d; }
     .stat strong { display:block; font-size:18px; }
-    .progress { width:100%; height:10px; background:#0b1220; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
-    .progress > span { display:block; height:100%; background:linear-gradient(90deg,#38bdf8,#22c55e); }
-    .events { display:grid; gap:8px; max-height:280px; overflow:auto; }
-    .event { border:1px solid var(--line); border-radius:10px; padding:10px; background:#0f172a; }
+    .progress { width:100%; height:10px; background:#111419; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+    .progress > span { display:block; height:100%; background:linear-gradient(90deg,var(--accent),var(--ok)); }
+    .events { display:grid; gap:8px; max-height:240px; overflow:auto; }
+    .event { border:1px solid var(--line); border-radius:8px; padding:10px; background:#13171d; }
     .event .row { align-items:flex-start; }
-    @media (max-width: 1400px) { .page { grid-template-columns:380px 1fr; } .history { grid-column:1 / -1; } }
-    @media (max-width: 980px) { .page { grid-template-columns:1fr; } }
+    @media (max-width: 1180px) {
+      .page { grid-template-columns:1fr; }
+      .compose-panel { position:static; max-height:none; }
+    }
+    @media (max-width: 680px) {
+      .page { padding:12px; }
+      .grid2,.grid3,.quick-actions,.submit-row,.auth-actions { grid-template-columns:1fr; }
+      .stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    }
   </style>
 </head>
 <body>
   <div class="page">
-    <section class="panel">
-      <h1>Vivid Web UI</h1>
-      <p class="muted">支持链接和本地拖拽文件，提交后后台执行，结果保留到历史。</p>
+    <section class="panel compose-panel">
+      <div class="intro">
+        <h1>Vivid Web UI</h1>
+        <p class="muted">放入视频链接或本地文件，确认处理方式后提交任务。</p>
+      </div>
       <form id="quickread-form">
-        <label>视频链接
-          <input name="source_url" placeholder="https://..." />
-        </label>
-        <label>批量 URL
-          <textarea name="source_urls" placeholder="每行一个链接。批量模式下，同一套配置会应用到所有任务。"></textarea>
-        </label>
-        <div id="dropzone" class="dropzone">
-          <div>拖入本地视频/音频文件，或点击选择</div>
-          <div id="file-name" class="hint">未选择文件</div>
-          <input id="media-file" name="media_file" type="file" accept="video/*,audio/*" style="margin-top:10px;" />
-        </div>
-        <div class="grid2">
-          <label>输出目录
-            <input name="data_dir" placeholder="./data" />
-          </label>
-          <label>默认输出目录
-            <button id="save-output-dir-btn" class="secondary" type="button">设为默认输出目录</button>
-          </label>
-        </div>
-        <div class="grid2">
-          <label>项目名<input name="project_name" placeholder="可选" /></label>
-          <label>平台<select name="platform"></select></label>
-        </div>
-        <div class="grid2">
-          <label>Whisper 模型<select name="whisper_model"></select></label>
-          <label>输出格式<select name="output_format"></select></label>
-        </div>
-        <div id="whisper-model-info" class="hint" style="margin-top: -10px; margin-bottom: 10px; color: #666;"></div>
-        <div class="grid2">
-          <label>采集策略<select name="acquisition_mode"></select></label>
-          <label>转录预设<select name="transcription_preset_id"></select></label>
-        </div>
-        <div class="grid2">
-          <label>转录后端<select name="transcription_backend"></select></label>
-          <label>OCR 后端<select name="vision_backend"></select></label>
-        </div>
-        <div class="grid2">
-          <label>OCR 配置<select name="vision_api_config_id"></select></label>
-          <label>OCR Prompt<select name="vision_prompt_id"></select></label>
-        </div>
-        <div class="grid2">
-          <label>OCR API Base
-            <input name="vision_api_base" placeholder="https://api.example.com" />
-          </label>
-          <label>OCR API Path
-            <input name="vision_api_path" placeholder="/v1/chat/completions" />
-          </label>
-        </div>
-        <div class="grid2">
-          <label>OCR API Key
-            <input name="vision_api_key" placeholder="sk-..." />
-          </label>
-          <label>OCR 模型
-            <input name="vision_model" placeholder="Qwen/Qwen2.5-VL-7B-Instruct" />
-          </label>
-        </div>
-        <label>OCR Prompt
-          <textarea name="vision_prompt" placeholder="只返回画面中的可读字幕文本。"></textarea>
-        </label>
-        <label>OCR System Prompt
-          <textarea name="vision_system_prompt" placeholder="可选"></textarea>
-        </label>
-        <label>Bilibili Cookie
-          <textarea name="bili_cookie" rows="3" placeholder="SESSDATA=...; bili_jct=..."></textarea>
-        </label>
-        <label>兼容 SESSDATA（可选）
-          <input name="sessdata" placeholder="只填 SESSDATA 值；完整 Cookie 优先" />
-        </label>
-        <div class="auth-panel">
-          <div class="row">
-            <strong>扫码登录 Bilibili</strong>
-            <span id="bili-auth-status" class="status queued">未检测</span>
+        <div class="primary-flow">
+          <div class="section-heading">
+            <h2>1. 来源</h2>
+            <div class="muted">粘贴单个链接、批量链接，或选择本地视频/音频文件。</div>
           </div>
-          <div id="bili-qrcode" class="qrcode"><span class="muted">生成后用 Bilibili App 扫码</span></div>
-          <div class="auth-actions">
-            <button id="bili-qrcode-btn" class="secondary" type="button">生成二维码</button>
-            <button id="bili-status-btn" class="secondary" type="button">校验登录态</button>
-            <button id="bili-logout-btn" class="secondary" type="button">注销清除</button>
-            <button id="bili-clear-qr-btn" class="secondary" type="button">清空二维码</button>
+          <div class="source-grid">
+            <label>视频链接
+              <input name="source_url" placeholder="https://..." />
+            </label>
+            <label>批量 URL
+              <textarea name="source_urls" placeholder="每行一个链接。批量模式下，同一套配置会应用到所有任务。"></textarea>
+            </label>
+            <div id="dropzone" class="dropzone">
+              <div>拖入本地视频/音频文件，或点击选择</div>
+              <div id="file-name" class="hint">未选择文件</div>
+              <input id="media-file" name="media_file" type="file" accept="video/*,audio/*" style="margin-top:10px;" />
+            </div>
           </div>
-          <div id="bili-auth-message" class="hint"></div>
+
+          <div class="section-heading">
+            <h2>2. 处理方式</h2>
+            <div class="muted">默认自动选择下载、转录或 OCR 路径；需要字幕识别时再切到 OCR。</div>
+          </div>
+          <div class="grid2">
+            <label>采集策略<select name="acquisition_mode"></select></label>
+            <label>输出格式<select name="output_format"></select></label>
+          </div>
+
+          <div class="section-heading">
+            <h2>3. 输出</h2>
+            <div class="muted">结果会写入输出目录，并出现在右侧任务详情和历史中。</div>
+          </div>
+          <div class="quick-actions">
+            <label>输出目录
+              <input name="data_dir" placeholder="./data" />
+            </label>
+            <button id="save-output-dir-btn" class="secondary" type="button">设为默认目录</button>
+          </div>
+
+          <div class="submit-row">
+            <button type="submit">提交任务</button>
+            <button id="refresh-btn" class="secondary" type="button">刷新历史</button>
+          </div>
         </div>
-        <div class="grid2">
-          <div class="hint">OCR API 按 OpenAI 兼容格式配置：`base + path + api_key + model`。</div>
-          <button id="save-vision-openai-btn" class="secondary" type="button">设为默认 OCR API 配置</button>
-        </div>
-        <div class="grid2">
-          <label>语言<input name="language" placeholder="zh" /></label>
-          <label>保留中间文件<select name="keep_files"><option value="true">保留</option><option value="false">清理</option></select></label>
-        </div>
-        <div class="grid2">
-          <label>转录超时（秒）<input name="transcribe_timeout" type="number" min="1" /></label>
-          <label>OCR 超时（秒）<input name="ocr_timeout" type="number" min="1" /></label>
-        </div>
-        <div class="grid2">
-          <label>Vision 超时（秒）<input name="vision_timeout" type="number" min="1" /></label>
-          <label>采样间隔（毫秒）<input name="vision_sample_ms" type="number" min="1" /></label>
-        </div>
-        <label>最小时长（毫秒）<input name="vision_min_duration_ms" type="number" min="1" /></label>
-        <div class="grid2">
-          <button type="submit">提交任务</button>
-          <button id="refresh-btn" class="secondary" type="button">刷新历史</button>
+
+        <div class="accordion-stack">
+          <details class="accordion">
+            <summary>
+              <span class="summary-title">
+                <strong>基础设置</strong>
+                <span>项目命名、平台、语言和中间文件</span>
+              </span>
+            </summary>
+            <div class="accordion-body">
+              <div class="grid2">
+                <label>项目名<input name="project_name" placeholder="可选" /></label>
+                <label>平台<select name="platform"></select></label>
+              </div>
+              <div class="grid2">
+                <label>语言<input name="language" placeholder="zh" /></label>
+                <label>保留中间文件<select name="keep_files"><option value="true">保留</option><option value="false">清理</option></select></label>
+              </div>
+            </div>
+          </details>
+
+          <details class="accordion">
+            <summary>
+              <span class="summary-title">
+                <strong>转录设置</strong>
+                <span>Whisper 模型、预设和后端</span>
+              </span>
+            </summary>
+            <div class="accordion-body">
+              <div class="grid2">
+                <label>Whisper 模型<select name="whisper_model"></select></label>
+                <label>转录预设<select name="transcription_preset_id"></select></label>
+              </div>
+              <div id="whisper-model-info" class="compact-note hint"></div>
+              <label>转录后端<select name="transcription_backend"></select></label>
+            </div>
+          </details>
+
+          <details class="accordion">
+            <summary>
+              <span class="summary-title">
+                <strong>OCR 设置</strong>
+                <span>画面字幕识别和 OpenAI 兼容接口</span>
+              </span>
+            </summary>
+            <div class="accordion-body">
+              <div class="grid2">
+                <label>OCR 后端<select name="vision_backend"></select></label>
+                <label>OCR 配置<select name="vision_api_config_id"></select></label>
+              </div>
+              <div class="grid2">
+                <label>OCR Prompt<select name="vision_prompt_id"></select></label>
+                <label>OCR 模型
+                  <input name="vision_model" placeholder="Qwen/Qwen2.5-VL-7B-Instruct" />
+                </label>
+              </div>
+              <div class="grid2">
+                <label>OCR API Base
+                  <input name="vision_api_base" placeholder="https://api.example.com" />
+                </label>
+                <label>OCR API Path
+                  <input name="vision_api_path" placeholder="/v1/chat/completions" />
+                </label>
+              </div>
+              <label>OCR API Key
+                <input name="vision_api_key" placeholder="sk-..." />
+              </label>
+              <label>OCR Prompt
+                <textarea name="vision_prompt" placeholder="只返回画面中的可读字幕文本。"></textarea>
+              </label>
+              <label>OCR System Prompt
+                <textarea name="vision_system_prompt" placeholder="可选"></textarea>
+              </label>
+              <div class="quick-actions">
+                <div class="hint">OCR API 按 OpenAI 兼容格式配置：base + path + api_key + model。</div>
+                <button id="save-vision-openai-btn" class="secondary" type="button">设为默认 OCR API</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="accordion">
+            <summary>
+              <span class="summary-title">
+                <strong>总结/矫正 AI</strong>
+                <span>总结和逐字稿矫正共用的 OpenAI 兼容接口</span>
+              </span>
+            </summary>
+            <div class="accordion-body">
+              <label>API Base
+                <input name="summary_api_base" placeholder="https://api.example.com/v1/chat/completions" />
+              </label>
+              <div class="grid2">
+                <label>API Key
+                  <input name="summary_api_key" placeholder="sk-..." />
+                </label>
+                <label>模型
+                  <input name="summary_model" placeholder="deepseek-ai/DeepSeek-V4-Flash" />
+                </label>
+              </div>
+              <div class="quick-actions">
+                <div class="hint">这组配置同时用于总结 AI 和矫正 AI，会优先于默认 SiliconFlow 配置。</div>
+                <button id="save-summary-openai-btn" class="secondary" type="button">设为默认总结/矫正 AI</button>
+              </div>
+            </div>
+          </details>
+
+          <details class="accordion">
+            <summary>
+              <span class="summary-title">
+                <strong>Bilibili 登录</strong>
+                <span>扫码、Cookie 和 SESSDATA</span>
+              </span>
+            </summary>
+            <div class="accordion-body">
+              <label>Bilibili Cookie
+                <textarea name="bili_cookie" rows="3" placeholder="SESSDATA=...; bili_jct=..."></textarea>
+              </label>
+              <label>兼容 SESSDATA（可选）
+                <input name="sessdata" placeholder="只填 SESSDATA 值；完整 Cookie 优先" />
+              </label>
+              <div class="auth-panel">
+                <div class="row">
+                  <strong>扫码登录 Bilibili</strong>
+                  <span id="bili-auth-status" class="status queued">未检测</span>
+                </div>
+                <div id="bili-qrcode" class="qrcode"><span class="muted">生成后用 Bilibili App 扫码</span></div>
+                <div class="auth-actions">
+                  <button id="bili-qrcode-btn" class="secondary" type="button">生成二维码</button>
+                  <button id="bili-status-btn" class="secondary" type="button">校验登录态</button>
+                  <button id="bili-logout-btn" class="secondary" type="button">注销清除</button>
+                  <button id="bili-clear-qr-btn" class="secondary" type="button">清空二维码</button>
+                </div>
+                <div id="bili-auth-message" class="hint"></div>
+              </div>
+            </div>
+          </details>
+
+          <details class="accordion">
+            <summary>
+              <span class="summary-title">
+                <strong>高级参数</strong>
+                <span>超时、采样间隔和 OCR 字幕最小时长</span>
+              </span>
+            </summary>
+            <div class="accordion-body">
+              <div class="grid2">
+                <label>转录超时（秒）<input name="transcribe_timeout" type="number" min="1" /></label>
+                <label>OCR 超时（秒）<input name="ocr_timeout" type="number" min="1" /></label>
+              </div>
+              <div class="grid2">
+                <label>Vision 超时（秒）<input name="vision_timeout" type="number" min="1" /></label>
+                <label>采样间隔（毫秒）<input name="vision_sample_ms" type="number" min="1" /></label>
+              </div>
+              <label>最小时长（毫秒）<input name="vision_min_duration_ms" type="number" min="1" /></label>
+            </div>
+          </details>
         </div>
       </form>
       <p id="form-message" class="hint"></p>
     </section>
-    <section class="panel">
-      <div class="row">
-        <h2>任务详情</h2>
-        <span id="job-status" class="status queued">未选择</span>
-      </div>
-      <div id="job-progress" class="progress" style="margin:12px 0;"><span style="width:0%"></span></div>
-      <div id="job-detail" class="list">
-        <div class="muted">提交后这里会显示状态、摘要、逐字稿和产物下载。</div>
-      </div>
-      <h3 style="margin-top:14px;">任务日志</h3>
-      <div id="job-events" class="events">
-        <div class="muted">任务开始后会持续追加下载、转录、OCR、总结等事件。</div>
-      </div>
-    </section>
-    <section class="panel history">
-      <div class="row">
-        <h2>历史任务</h2>
-        <span id="history-count" class="muted">0 条</span>
-      </div>
-      <div id="history-stats" class="stats"></div>
-      <input id="history-filter" placeholder="按标题、来源或状态过滤" style="margin-bottom:10px;" />
-      <div class="toolbar">
-        <span id="selection-count" class="hint">已选 0 条</span>
-        <button id="select-visible-btn" class="secondary" type="button">选中当前筛选</button>
-        <button id="clear-selection-btn" class="secondary" type="button">清空选择</button>
-        <button id="export-selected-btn" class="secondary" type="button">导出选中任务</button>
-      </div>
-      <div id="job-history" class="list"></div>
-    </section>
+    <div class="side-stack">
+      <section class="panel">
+        <div class="row">
+          <h2>任务详情</h2>
+          <span id="job-status" class="status queued">未选择</span>
+        </div>
+        <div id="job-progress" class="progress" style="margin:12px 0;"><span style="width:0%"></span></div>
+        <div id="job-detail" class="list">
+          <div class="muted">提交后这里会显示状态、摘要、逐字稿和产物下载。</div>
+        </div>
+        <details class="accordion" style="margin-top:14px;">
+          <summary>
+            <span class="summary-title">
+              <strong>任务日志</strong>
+              <span>下载、转录、OCR、总结等事件</span>
+            </span>
+          </summary>
+          <div class="accordion-body">
+            <div id="job-events" class="events">
+              <div class="muted">任务开始后会持续追加事件。</div>
+            </div>
+          </div>
+        </details>
+      </section>
+      <section class="panel history">
+        <div class="row">
+          <h2>历史任务</h2>
+          <span id="history-count" class="muted">0 条</span>
+        </div>
+        <div id="history-stats" class="stats"></div>
+        <input id="history-filter" placeholder="按标题、来源或状态过滤" style="margin-bottom:10px;" />
+        <div class="toolbar">
+          <span id="selection-count" class="hint">已选 0 条</span>
+          <button id="select-visible-btn" class="secondary" type="button">选中当前筛选</button>
+          <button id="clear-selection-btn" class="secondary" type="button">清空选择</button>
+          <button id="export-selected-btn" class="secondary" type="button">导出选中任务</button>
+        </div>
+        <div id="job-history" class="list"></div>
+      </section>
+    </div>
   </div>
   <script>
     const state = { bootstrap: null, activeJobId: null, pollTimer: null, eventSource: null, file: null, jobs: [], selectedJobIds: new Set(), biliQrCodeKey: null, biliAuthTimer: null };
@@ -1199,6 +1421,7 @@ def _render_index() -> str:
       document.getElementById("refresh-btn").addEventListener("click", refreshHistory);
       document.getElementById("save-output-dir-btn").addEventListener("click", saveDefaultOutputDir);
       document.getElementById("save-vision-openai-btn").addEventListener("click", saveDefaultVisionOpenAi);
+      document.getElementById("save-summary-openai-btn").addEventListener("click", saveDefaultSummaryOpenAi);
       document.getElementById("media-file").addEventListener("change", onFilePicked);
       document.getElementById("history-filter").addEventListener("input", () => renderHistory(state.jobs));
       document.getElementById("select-visible-btn").addEventListener("click", selectVisibleJobs);
@@ -1246,7 +1469,7 @@ def _render_index() -> str:
         if (info) {
           infoDiv.innerHTML = `
             <strong>${model}</strong> 模型: ${info.size} | ${info.speed} | 准确度: ${info.accuracy} | 适用: ${info.best_for}
-            <br><span style="color: #2196F3;">💡 首次使用会自动下载模型文件，请确保网络畅通</span>
+            <br><span style="color: #2dd4bf;">首次使用会自动下载模型文件，请确保网络畅通</span>
           `;
         }
       }
@@ -1409,14 +1632,14 @@ def _render_index() -> str:
         item.className = `job-card ${state.activeJobId === job.job_id ? "active" : ""} ${exportable ? "" : "disabled"}`;
         item.innerHTML = `
           <div class="row">
-            <div class="row" style="justify-content:flex-start; gap:10px;">
+            <div class="row job-title-row">
               <input class="check" type="checkbox" ${checked ? "checked" : ""} ${exportable ? "" : "disabled"} />
-              <strong>${escapeHtml(job.title || job.project_name || job.job_id)}</strong>
+              <strong class="job-title">${escapeHtml(job.title || job.project_name || job.job_id)}</strong>
             </div>
             <span class="status ${job.status}">${escapeHtml(job.status)}</span>
           </div>
           <div class="hint">进度：${Number(job.progress || 0)}%${job.queue_position ? ` · 队列第 ${job.queue_position} 位` : ""}</div>
-          <div class="hint">${escapeHtml(job.source || "")}</div>
+          <div class="hint truncate">${escapeHtml(job.source || "")}</div>
           <div class="hint">${escapeHtml(job.updated_at || "")}</div>
         `;
         const checkbox = item.querySelector('input[type="checkbox"]');
@@ -1522,7 +1745,7 @@ def _render_index() -> str:
 
     function persistForm() {
       const form = document.getElementById("quickread-form");
-      const sensitiveFields = new Set(["bili_cookie", "sessdata"]);
+      const sensitiveFields = new Set(["bili_cookie", "sessdata", "summary_api_key"]);
       const data = {};
       for (const element of form.elements) {
         if (!element.name || element.type === "file" || sensitiveFields.has(element.name)) continue;
@@ -1536,7 +1759,7 @@ def _render_index() -> str:
       if (!text) return;
       try {
         const data = JSON.parse(text);
-        const sensitiveFields = new Set(["bili_cookie", "sessdata"]);
+        const sensitiveFields = new Set(["bili_cookie", "sessdata", "summary_api_key"]);
         for (const [key, value] of Object.entries(data)) {
           if (sensitiveFields.has(key)) continue;
           const field = document.querySelector(`[name="${key}"]`);
@@ -1688,6 +1911,26 @@ def _render_index() -> str:
       }
       persistForm();
       setFormMessage("默认 OCR API 配置已保存");
+    }
+
+    async function saveDefaultSummaryOpenAi() {
+      const formData = new FormData();
+      for (const name of [
+        "summary_api_base",
+        "summary_api_key",
+        "summary_model",
+      ]) {
+        const field = document.querySelector(`[name="${name}"]`);
+        formData.set(name, field ? field.value : "");
+      }
+      const response = await fetch("/api/preferences/summary-openai", { method: "POST", body: formData });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        setFormMessage(payload.detail || payload.error || "保存默认总结/矫正 AI 配置失败", true);
+        return;
+      }
+      persistForm();
+      setFormMessage("默认总结/矫正 AI 配置已保存");
     }
 
     async function createBiliQrCode() {
@@ -2139,13 +2382,14 @@ def _build_job_archive_prefix(job: dict[str, Any]) -> str:
 
 
 def _invoke_run_quickread(
+    runner,
     options,
     event_callback,
 ):
-    parameters = inspect.signature(run_quickread).parameters
+    parameters = inspect.signature(runner).parameters
     if "event_callback" in parameters:
-        return run_quickread(options, event_callback=event_callback)
-    return run_quickread(options)
+        return runner(options, event_callback=event_callback)
+    return runner(options)
 
 
 def _build_event(stage: str, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2247,6 +2491,22 @@ def save_preferred_vision_openai(settings: Settings, vision_payload: dict[str, A
     payload["default_vision_openai"] = {
         key: value
         for key, value in vision_payload.items()
+        if value not in {None, ""}
+    }
+    save_web_preferences(settings, payload)
+
+
+def load_preferred_summary_openai(settings: Settings) -> dict[str, Any]:
+    payload = load_web_preferences(settings)
+    summary = payload.get("default_summary_openai")
+    return summary if isinstance(summary, dict) else {}
+
+
+def save_preferred_summary_openai(settings: Settings, summary_payload: dict[str, Any]) -> None:
+    payload = load_web_preferences(settings)
+    payload["default_summary_openai"] = {
+        key: value
+        for key, value in summary_payload.items()
         if value not in {None, ""}
     }
     save_web_preferences(settings, payload)

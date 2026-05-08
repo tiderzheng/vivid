@@ -111,6 +111,24 @@ def test_runtime_factory_prefers_explicit_bili_cookie_over_sessdata_sources(tmp_
     assert options.sessdata == "sessdata-from-values"
 
 
+def test_runtime_factory_maps_summary_openai_to_shared_llm_provider(tmp_path):
+    settings = _build_settings(tmp_path)
+
+    options = build_runtime_options(
+        settings,
+        {
+            "source": "https://example.com/video",
+            "summary_api_base": "https://llm.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "demo-summary-model",
+        },
+    )
+
+    assert options.siliconflow_base_url == "https://llm.example.com/v1/chat/completions"
+    assert options.siliconflow_api_key == "sk-summary"
+    assert options.siliconflow_model == "demo-summary-model"
+
+
 def test_runtime_factory_uses_env_bili_cookie_before_explicit_sessdata(tmp_path):
     settings = _build_settings(tmp_path)
     settings.bili_cookie = "cookie-from-settings"

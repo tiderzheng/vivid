@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import os
 
+from ...constants import DEFAULT_SILICONFLOW_BASE
 from ...models.runtime import RuntimeOptions
 from .models import (
     DEFAULT_SUMMARY_SYSTEM_PROMPT,
     DEFAULT_SUMMARY_USER_PROMPT,
     SummaryPromptConfig,
+    SummaryProviderItem,
     SummaryProviderConfig,
 )
 from .store import load_summary_provider_store, load_summary_store
@@ -70,29 +72,68 @@ def build_summary_prompt_config(options: RuntimeOptions) -> SummaryPromptConfig:
 
 def build_summary_provider_configs(options: RuntimeOptions) -> list[SummaryProviderConfig]:
     store = load_summary_provider_store(options.summary_providers_path)
+    store_providers = store.get_providers()
+    disabled_provider_ids = {item.id for item in store.providers if not item.enabled}
     resolved: list[SummaryProviderConfig] = []
-    for item in store.get_providers():
-        api_key = (os.environ.get(item.api_key_env) or "").strip()
-        if not api_key:
-            continue
-        model = item.model
-        if item.id == "siliconflow":
-            model = options.siliconflow_model or model
-        elif item.id == "dashscope":
-            model = options.dashscope_model or model
-        if model:
+    for item in store_providers:
+        provider = _build_store_provider_config(item, options)
+        if provider:
+            resolved.append(provider)
+    if resolved:
+        if (
+            options.dashscope_api_key
+            and options.dashscope_model
+            and not any(item.provider_id == "dashscope" for item in resolved)
+        ):
             resolved.append(
                 SummaryProviderConfig(
-                    provider_id=item.id,
-                    provider_name=item.name,
-                    base_url=item.base_url,
-                    model=model,
-                    api_key=api_key,
+                    provider_id="dashscope",
+                    provider_name="DashScope",
+                    base_url=options.dashscope_base_url,
+                    model=options.dashscope_model,
+                    api_key=options.dashscope_api_key,
                 )
             )
-    if resolved:
         return resolved
-    return _build_legacy_summary_provider_configs(options)
+    return _build_legacy_summary_provider_configs(options, disabled_provider_ids=disabled_provider_ids)
+
+
+def _build_store_provider_config(
+    item: SummaryProviderItem,
+    options: RuntimeOptions,
+) -> SummaryProviderConfig | None:
+    api_key = _provider_api_key(item, options)
+    if not api_key:
+        return None
+    base_url = item.base_url
+    model = item.model
+    if item.id == "siliconflow":
+        model = options.siliconflow_model or item.model
+        if options.siliconflow_base_url != DEFAULT_SILICONFLOW_BASE:
+            base_url = options.siliconflow_base_url
+    elif item.id == "dashscope":
+        model = options.dashscope_model or item.model
+    if not model:
+        return None
+    return SummaryProviderConfig(
+        provider_id=item.id,
+        provider_name=item.name,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
+
+
+def _provider_api_key(item: SummaryProviderItem, options: RuntimeOptions) -> str | None:
+    if item.id == "siliconflow":
+        return options.siliconflow_api_key or _env_text(item.api_key_env)
+    if item.id == "dashscope":
+        return options.dashscope_api_key or _env_text(item.api_key_env)
+    return _env_text(item.api_key_env)
+
+
+def _env_text(name: str) -> str | None:
+    return (os.environ.get(name) or "").strip() or None
 
 
 def build_calibration_prompt_configs(options: RuntimeOptions) -> tuple[SummaryPromptConfig, SummaryPromptConfig]:
@@ -129,9 +170,18 @@ def build_calibration_prompt_configs(options: RuntimeOptions) -> tuple[SummaryPr
     )
 
 
-def _build_legacy_summary_provider_configs(options: RuntimeOptions) -> list[SummaryProviderConfig]:
+def _build_legacy_summary_provider_configs(
+    options: RuntimeOptions,
+    *,
+    disabled_provider_ids: set[str] | None = None,
+) -> list[SummaryProviderConfig]:
+    disabled_provider_ids = disabled_provider_ids or set()
     resolved: list[SummaryProviderConfig] = []
-    if options.siliconflow_api_key:
+    if (
+        "siliconflow" not in disabled_provider_ids
+        and options.siliconflow_api_key
+        and options.siliconflow_model
+    ):
         resolved.append(
             SummaryProviderConfig(
                 provider_id="siliconflow",
@@ -141,7 +191,7 @@ def _build_legacy_summary_provider_configs(options: RuntimeOptions) -> list[Summ
                 api_key=options.siliconflow_api_key,
             )
         )
-    if options.dashscope_api_key:
+    if "dashscope" not in disabled_provider_ids and options.dashscope_api_key and options.dashscope_model:
         resolved.append(
             SummaryProviderConfig(
                 provider_id="dashscope",
