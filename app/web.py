@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -17,6 +19,7 @@ from typing import Any
 from uuid import uuid4
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import requests
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 
@@ -42,7 +45,9 @@ from .services.run_state import (
     suggested_resume_stage as checkpoint_suggested_resume_stage,
 )
 from .subsystems.summary.store import load_summary_provider_store
+from .subsystems.summary.resolver import build_summary_provider_configs
 from .subsystems.transcription.store import load_transcription_store
+from .subsystems.vision.resolver import build_vision_request_config
 from .subsystems.vision.store import load_vision_store
 
 WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
@@ -54,8 +59,22 @@ WHISPER_MODEL_INFO = {
     "large": {"size": "~1.5 GB", "speed": "最慢", "accuracy": "最好", "best_for": "专业场景"},
 }
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
+SENSITIVE_JOB_KEYS = {
+    "bili_cookie",
+    "sessdata",
+    "summary_api_key",
+    "vision_api_key",
+}
+SENSITIVE_SETTINGS_KEYS = {
+    "bili_cookie",
+    "sessdata",
+    "siliconflow_api_key",
+    "dashscope_api_key",
+    "vision_api_key",
+}
 
 app = FastAPI(title="Vivid Web UI")
+_ORIGINAL_RUN_QUICKREAD = run_quickread
 
 
 @dataclass(slots=True)
@@ -79,6 +98,8 @@ class WebJobRecord:
     result: dict[str, Any] | None = None
     events: list[dict[str, Any]] | None = None
     workdir: str | None = None
+    data_paths: list[str] | None = None
+    worker_pid: int | None = None
 
     def to_dict(
         self,
@@ -113,6 +134,13 @@ class WebJobRecord:
         return payload
 
 
+@dataclass(slots=True)
+class SimpleSummaryDiagnosticConfig:
+    base_url: str
+    model: str
+    api_key: str | None = None
+
+
 class WebJobManager:
     def __init__(self, history_path: Path, max_workers: int = 1) -> None:
         self.history_path = history_path
@@ -120,6 +148,8 @@ class WebJobManager:
         self.executor = ThreadPoolExecutor(max_workers=max(1, int(max_workers)), thread_name_prefix="vivid-web")
         self.records: dict[str, WebJobRecord] = {}
         self.order: list[str] = []
+        self.running_processes: dict[str, subprocess.Popen] = {}
+        self.secret_values: dict[str, dict[str, Any]] = {}
         self._load()
 
     def list_jobs(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -151,6 +181,7 @@ class WebJobManager:
         now = _now_iso()
         job_id = uuid4().hex[:12]
         source = str(values.get("source") or "")
+        secret_values = _job_secret_values(values)
         record = WebJobRecord(
             job_id=job_id,
             status="queued",
@@ -164,9 +195,12 @@ class WebJobManager:
             project_name=_text_or_none(values.get("project_name")),
             workdir=_text_or_none(values.get("resume_workdir")),
             events=[_build_event("queued", "任务已创建并进入队列", {"source": source})],
+            data_paths=_job_data_paths_from_values(values),
         )
         with self.lock:
             self.records[job_id] = record
+            if secret_values:
+                self.secret_values[job_id] = secret_values
             self.order.append(job_id)
             self._save_locked()
         self.executor.submit(self._run_job, settings, job_id, values, _invoke_run_quickread, run_quickread)
@@ -189,6 +223,7 @@ class WebJobManager:
             if record.status not in TERMINAL_JOB_STATUSES:
                 raise RuntimeError("job is not in terminal state")
             values = dict(record.request)
+            values.update(self.secret_values.get(job_id, {}))
         if overrides:
             values.update(overrides)
         source = _text_or_none(values.get("source"))
@@ -207,6 +242,7 @@ class WebJobManager:
             if record.status not in TERMINAL_JOB_STATUSES:
                 raise RuntimeError("job is not in terminal state")
             values = dict(record.request)
+            values.update(self.secret_values.get(job_id, {}))
             workdir = self._resolve_record_workdir(record)
             resume_details = self._resume_details(record, workdir)
         if not workdir:
@@ -224,22 +260,33 @@ class WebJobManager:
         return self.submit(settings, values)
 
     def cancel(self, job_id: str) -> dict[str, Any]:
+        process: subprocess.Popen | None = None
+        worker_pid: int | None = None
         with self.lock:
             record = self.records.get(job_id)
             if record is None:
                 raise KeyError(job_id)
-            if record.status != "queued":
-                raise RuntimeError("only queued jobs can be cancelled")
-            now = _now_iso()
-            record.status = "cancelled"
-            record.stage = "cancelled"
-            record.progress = 0
-            record.message = "任务已取消"
-            record.updated_at = now
-            record.finished_at = now
-            if record.events is None:
-                record.events = []
-            record.events.append(_build_event("cancelled", "任务已从队列取消"))
+            if record.status == "queued":
+                self._mark_cancelled_locked(record, "任务已取消", "任务已从队列取消")
+                self._save_locked()
+                return self._record_to_dict(record)
+            if record.status != "running":
+                raise RuntimeError("job is not cancellable")
+            worker_pid = record.worker_pid
+            process = self.running_processes.get(job_id)
+            if not worker_pid:
+                raise RuntimeError("running job has no worker process to terminate")
+
+        _terminate_process_tree(worker_pid, process=process)
+
+        with self.lock:
+            record = self.records.get(job_id)
+            if record is None:
+                raise KeyError(job_id)
+            if record.status == "running":
+                self._mark_cancelled_locked(record, "任务已终止", "任务进程已被终止", {"worker_pid": worker_pid})
+                record.worker_pid = None
+            self.running_processes.pop(job_id, None)
             self._save_locked()
             return self._record_to_dict(record)
 
@@ -251,6 +298,7 @@ class WebJobManager:
             if record.status == "running":
                 raise RuntimeError("running job cannot be deleted")
             self.records.pop(job_id, None)
+            self.secret_values.pop(job_id, None)
             self.order = [item for item in self.order if item != job_id]
             self._save_locked()
         if delete_files:
@@ -258,6 +306,19 @@ class WebJobManager:
         return record.to_dict()
 
     def _run_job(
+        self,
+        settings: Settings,
+        job_id: str,
+        values: dict[str, Any],
+        runner_invoker,
+        runner,
+    ) -> None:
+        if _should_run_job_in_worker_process(runner_invoker, runner):
+            self._run_job_subprocess(settings, job_id, values)
+            return
+        self._run_job_inline(settings, job_id, values, runner_invoker, runner)
+
+    def _run_job_inline(
         self,
         settings: Settings,
         job_id: str,
@@ -292,6 +353,8 @@ class WebJobManager:
                 updated_at=_now_iso(),
             )
             result = runner_invoker(runner, options, self._make_event_callback(job_id))
+            if self._is_cancelled(job_id):
+                return
             finished_at = _now_iso()
             self._update(
                 job_id,
@@ -306,11 +369,15 @@ class WebJobManager:
                 title=result.source.title,
                 project_name=result.source.title,
                 workdir=str(result.artifacts.workdir),
+                data_paths=_job_data_paths_from_result(result, values),
                 result=_serialize_result(result),
                 error=None,
+                worker_pid=None,
             )
             self._append_event(job_id, "completed", "任务执行完成")
         except Exception as exc:  # noqa: BLE001
+            if self._is_cancelled(job_id):
+                return
             finished_at = _now_iso()
             self._update(
                 job_id,
@@ -322,8 +389,165 @@ class WebJobManager:
                 updated_at=finished_at,
                 duration_seconds=round(time.perf_counter() - started_perf, 3),
                 error=str(exc),
+                worker_pid=None,
             )
             self._append_event(job_id, "failed", f"任务失败：{exc}")
+
+    def _run_job_subprocess(self, settings: Settings, job_id: str, values: dict[str, Any]) -> None:
+        started_at = _now_iso()
+        started_perf = time.perf_counter()
+        with self.lock:
+            record = self.records.get(job_id)
+            if record is None or record.status == "cancelled":
+                return
+
+        worker_dir = settings.data_dir / "web_ui" / "workers" / job_id
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        input_path = worker_dir / "input.json"
+        events_path = worker_dir / "events.jsonl"
+        result_path = worker_dir / "result.json"
+        stdout_path = worker_dir / "stdout.log"
+        stderr_path = worker_dir / "stderr.log"
+        worker_env = _build_worker_env(settings, values)
+        _write_worker_input(input_path, settings, values)
+
+        process: subprocess.Popen | None = None
+        seen_events = 0
+        try:
+            process = _start_worker_process(
+                settings,
+                input_path=input_path,
+                events_path=events_path,
+                result_path=result_path,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                env=worker_env,
+            )
+            with self.lock:
+                record = self.records.get(job_id)
+                if record is None:
+                    _terminate_process_tree(process.pid, process=process)
+                    return
+                if record.status == "cancelled":
+                    _terminate_process_tree(process.pid, process=process)
+                    return
+                record.status = "running"
+                record.stage = "preparing"
+                record.progress = 15
+                record.message = "正在准备执行环境"
+                record.started_at = started_at
+                record.updated_at = started_at
+                record.worker_pid = process.pid
+                self.running_processes[job_id] = process
+                self._save_locked()
+            self._append_event(
+                job_id,
+                "preparing",
+                "任务工作进程已启动",
+                {"worker_pid": process.pid, "worker_dir": str(worker_dir)},
+            )
+            self._update(
+                job_id,
+                status="running",
+                stage="processing",
+                progress=55,
+                message="正在采集、转录和总结内容",
+                updated_at=_now_iso(),
+            )
+
+            while process.poll() is None:
+                seen_events = self._drain_worker_events(job_id, events_path, seen_events)
+                if self._is_cancelled(job_id):
+                    return
+                time.sleep(0.25)
+
+            seen_events = self._drain_worker_events(job_id, events_path, seen_events)
+            if self._is_cancelled(job_id):
+                return
+
+            payload = _read_worker_result(result_path)
+            if payload.get("ok"):
+                result_payload = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+                files = result_payload.get("files") if isinstance(result_payload.get("files"), dict) else {}
+                source = result_payload.get("source") if isinstance(result_payload.get("source"), dict) else {}
+                finished_at = _now_iso()
+                self._update(
+                    job_id,
+                    status="completed",
+                    stage="completed",
+                    progress=100,
+                    message="任务完成",
+                    finished_at=finished_at,
+                    updated_at=finished_at,
+                    duration_seconds=round(time.perf_counter() - started_perf, 3),
+                    platform=_text_or_none(source.get("platform")),
+                    title=_text_or_none(source.get("title")),
+                    project_name=_text_or_none(source.get("title")) or _text_or_none(values.get("project_name")),
+                    workdir=_text_or_none(files.get("workdir")),
+                    data_paths=_job_data_paths_from_result_payload(result_payload, values),
+                    result=result_payload,
+                    error=None,
+                    worker_pid=None,
+                )
+                self._append_event(job_id, "completed", "任务执行完成")
+                return
+
+            finished_at = _now_iso()
+            error = _worker_error_message(payload, stderr_path, process.returncode)
+            self._update(
+                job_id,
+                status="failed",
+                stage="failed",
+                progress=100,
+                message="任务失败",
+                finished_at=finished_at,
+                updated_at=finished_at,
+                duration_seconds=round(time.perf_counter() - started_perf, 3),
+                error=error,
+                worker_pid=None,
+            )
+            self._append_event(job_id, "failed", f"任务失败：{error}")
+        except Exception as exc:  # noqa: BLE001
+            if self._is_cancelled(job_id):
+                return
+            finished_at = _now_iso()
+            self._update(
+                job_id,
+                status="failed",
+                stage="failed",
+                progress=100,
+                message="任务失败",
+                finished_at=finished_at,
+                updated_at=finished_at,
+                duration_seconds=round(time.perf_counter() - started_perf, 3),
+                error=str(exc),
+                worker_pid=None,
+            )
+            self._append_event(job_id, "failed", f"任务失败：{exc}")
+        finally:
+            if process is not None and self._is_cancelled(job_id) and process.poll() is None:
+                _terminate_process_tree(process.pid, process=process)
+            with self.lock:
+                self.running_processes.pop(job_id, None)
+
+    def _drain_worker_events(self, job_id: str, events_path: Path, seen_events: int) -> int:
+        if not events_path.exists():
+            return seen_events
+        try:
+            lines = events_path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return seen_events
+        for line in lines[seen_events:]:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                break
+            stage = str(payload.get("stage") or "processing")
+            message = str(payload.get("message") or "")
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else None
+            self._append_event(job_id, stage, message, data)
+            seen_events += 1
+        return seen_events
 
     def _update(self, job_id: str, **changes: Any) -> None:
         with self.lock:
@@ -331,6 +555,29 @@ class WebJobManager:
             for key, value in changes.items():
                 setattr(record, key, value)
             self._save_locked()
+
+    def _is_cancelled(self, job_id: str) -> bool:
+        with self.lock:
+            record = self.records.get(job_id)
+            return bool(record and record.status == "cancelled")
+
+    def _mark_cancelled_locked(
+        self,
+        record: WebJobRecord,
+        message: str,
+        event_message: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        now = _now_iso()
+        record.status = "cancelled"
+        record.stage = "cancelled"
+        record.progress = 0
+        record.message = message
+        record.updated_at = now
+        record.finished_at = now
+        if record.events is None:
+            record.events = []
+        record.events.append(_build_event("cancelled", event_message, data))
 
     def _append_event(self, job_id: str, stage: str, message: str, data: dict[str, Any] | None = None) -> None:
         with self.lock:
@@ -341,6 +588,7 @@ class WebJobManager:
             workdir = _text_or_none((data or {}).get("workdir")) if isinstance(data, dict) else None
             if workdir:
                 record.workdir = workdir
+            _append_record_data_paths(record, data)
             record.updated_at = _now_iso()
             record.stage = stage
             progress = _progress_for_stage(stage, record.progress)
@@ -364,7 +612,7 @@ class WebJobManager:
         error_code = _extract_job_error_code(record.events, record.error)
         return record.to_dict(
             queue_position=queue_position,
-            can_cancel=record.status == "queued",
+            can_cancel=record.status in {"queued", "running"},
             can_retry=record.status in TERMINAL_JOB_STATUSES,
             can_continue=resume_details["can_continue"],
             available_resume_stages=resume_details["available_resume_stages"],
@@ -438,9 +686,13 @@ class WebJobManager:
                     result=item.get("result"),
                     events=list(item.get("events", []) or []),
                     workdir=_text_or_none(item.get("workdir")),
+                    data_paths=_coerce_data_paths(item.get("data_paths")),
+                    worker_pid=_int_or_none(item.get("worker_pid")),
                 )
             except KeyError:
                 continue
+            if record.status in {"queued", "running"}:
+                self._mark_interrupted_after_restart(record)
             self.records[record.job_id] = record
             self.order.append(record.job_id)
 
@@ -451,6 +703,22 @@ class WebJobManager:
             json.dumps(data, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
+
+    def _mark_interrupted_after_restart(self, record: WebJobRecord) -> None:
+        if record.worker_pid:
+            _terminate_process_tree(record.worker_pid)
+        now = _now_iso()
+        record.status = "failed"
+        record.stage = "failed"
+        record.progress = 100
+        record.message = "服务重启，任务已中断"
+        record.updated_at = now
+        record.finished_at = record.finished_at or now
+        record.error = record.error or "Web 服务重启，原任务进程已不可管理"
+        record.worker_pid = None
+        if record.events is None:
+            record.events = []
+        record.events.append(_build_event("failed", "服务重启，任务已标记为中断"))
 
 
 _JOB_MANAGERS: dict[str, WebJobManager] = {}
@@ -789,6 +1057,55 @@ async def set_default_summary_openai(request: Request) -> dict[str, Any]:
     return {"ok": True, **payload}
 
 
+@app.post("/api/diagnostics/vision-openai")
+async def diagnose_vision_openai(request: Request) -> dict[str, Any]:
+    settings = load_settings()
+    form = await request.form()
+    config = _diagnostic_vision_config(settings, form)
+    if not config.api_base:
+        raise HTTPException(status_code=400, detail="vision_api_base is required")
+    if not config.model:
+        raise HTTPException(status_code=400, detail="vision_model is required")
+    return _diagnose_openai_chat(
+        base_url=config.api_base,
+        api_key=config.api_key,
+        model=config.model,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Return OK if you can read this connectivity test."},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": _DIAGNOSTIC_IMAGE_DATA_URL},
+                    },
+                ],
+            }
+        ],
+        api_path=config.api_path or "/v1/chat/completions",
+        timeout=config.timeout or 20,
+    )
+
+
+@app.post("/api/diagnostics/summary-openai")
+async def diagnose_summary_openai(request: Request) -> dict[str, Any]:
+    settings = load_settings()
+    form = await request.form()
+    config = _diagnostic_summary_config(settings, form)
+    if not config:
+        raise HTTPException(status_code=400, detail="summary_api_base is required")
+    return _diagnose_openai_chat(
+        base_url=config.base_url,
+        api_key=config.api_key,
+        model=config.model,
+        messages=[
+            {"role": "system", "content": "You are a connectivity checker. Reply with OK."},
+            {"role": "user", "content": "Reply with OK only."},
+        ],
+        timeout=20,
+    )
+
+
 async def _collect_request_values(request: Request, settings: Settings) -> dict[str, Any]:
     payloads = await _collect_request_payloads(request, settings)
     if len(payloads) != 1:
@@ -1026,6 +1343,91 @@ def _serialize_result(result: OrchestratorResult) -> dict[str, Any]:
     return payload
 
 
+def _job_data_paths_from_result(result: OrchestratorResult, values: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    files = _serialize_result(result).get("files") or {}
+    for value in files.values():
+        if value:
+            paths.append(str(value))
+    _append_upload_source_data_path(paths, values)
+    return _dedupe_text(paths)
+
+
+def _job_data_paths_from_result_payload(result: dict[str, Any], values: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    files = result.get("files") if isinstance(result.get("files"), dict) else {}
+    for value in files.values():
+        if value:
+            paths.append(str(value))
+    _append_upload_source_data_path(paths, values)
+    return _dedupe_text(paths)
+
+
+def _job_data_paths_from_values(values: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for key in ("resume_workdir", "_temp_upload_path"):
+        value = _text_or_none(values.get(key))
+        if value:
+            paths.append(value)
+    _append_upload_source_data_path(paths, values)
+    return _dedupe_text(paths)
+
+
+def _append_upload_source_data_path(paths: list[str], values: dict[str, Any]) -> None:
+    temp_upload_path = _text_or_none(values.get("_temp_upload_path"))
+    source = _text_or_none(values.get("source"))
+    if temp_upload_path and source and Path(temp_upload_path).expanduser() == Path(source).expanduser():
+        paths.append(source)
+
+
+def _append_record_data_paths(record: WebJobRecord, data: dict[str, Any] | None) -> None:
+    if not isinstance(data, dict):
+        return
+    paths = list(record.data_paths or [])
+    for key, value in data.items():
+        text = _text_or_none(value)
+        if text and _should_record_data_path(record, key, text):
+            paths.append(text)
+    record.data_paths = _dedupe_text(paths)
+
+
+def _should_record_data_path(record: WebJobRecord, key: str, value: str) -> bool:
+    if key in {"workdir", "artifacts_dir"} or key.endswith("_dir"):
+        return True
+    if not key.endswith("_path"):
+        return False
+    if not record.workdir:
+        return False
+    return _is_path_under_or_equal(Path(value).expanduser(), Path(record.workdir).expanduser())
+
+
+def _coerce_data_paths(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return _dedupe_text([str(item) for item in value if _text_or_none(item)])
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe_text(values: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = _text_or_none(value)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
 def _public_request(values: dict[str, Any]) -> dict[str, Any]:
     keys = [
         "source",
@@ -1056,11 +1458,191 @@ def _public_request(values: dict[str, Any]) -> dict[str, Any]:
 
 
 def _stored_request(values: dict[str, Any]) -> dict[str, Any]:
-    payload = _public_request(values)
-    summary_api_key = _text_or_none(values.get("summary_api_key"))
-    if summary_api_key:
-        payload["summary_api_key"] = summary_api_key
-    return payload
+    return _public_request(values)
+
+
+def _job_secret_values(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key in SENSITIVE_JOB_KEYS
+        if (value := _text_or_none(values.get(key)))
+    }
+
+
+def _diagnostic_vision_config(settings: Settings, form: Any):
+    preferred_vision_openai = load_preferred_vision_openai(settings)
+    selected_config_id = (
+        _clean_form_value(form.get("vision_api_config_id"))
+        or _text_or_none(preferred_vision_openai.get("vision_api_config_id"))
+        or settings.vision_api_config_id
+    )
+    values = {
+        "source": "__diagnostic__",
+        "vision_api_config_id": selected_config_id,
+        "vision_api_base": _clean_form_value(form.get("vision_api_base"))
+        or preferred_vision_openai.get("vision_api_base"),
+        "vision_api_path": _clean_form_value(form.get("vision_api_path"))
+        or preferred_vision_openai.get("vision_api_path"),
+        "vision_api_key": _clean_form_value(form.get("vision_api_key"))
+        or preferred_vision_openai.get("vision_api_key"),
+        "vision_model": _clean_form_value(form.get("vision_model"))
+        or preferred_vision_openai.get("vision_model"),
+        "vision_timeout": _clean_form_value(form.get("vision_timeout"))
+        or preferred_vision_openai.get("vision_timeout"),
+    }
+    return build_vision_request_config(build_runtime_options(settings, values))
+
+
+def _diagnostic_summary_config(settings: Settings, form: Any):
+    preferred_summary_openai = load_preferred_summary_openai(settings)
+    values = {
+        "source": "__diagnostic__",
+        "summary_api_base": _clean_form_value(form.get("summary_api_base"))
+        or preferred_summary_openai.get("summary_api_base"),
+        "summary_api_key": _clean_form_value(form.get("summary_api_key"))
+        or preferred_summary_openai.get("summary_api_key"),
+        "summary_model": _clean_form_value(form.get("summary_model"))
+        or preferred_summary_openai.get("summary_model"),
+    }
+    providers = build_summary_provider_configs(build_runtime_options(settings, values))
+    if providers:
+        return providers[0]
+    base_url = _text_or_none(values.get("summary_api_base"))
+    model = _text_or_none(values.get("summary_model"))
+    if not base_url or not model:
+        return None
+    return SimpleSummaryDiagnosticConfig(
+        base_url=base_url,
+        model=model,
+        api_key=_text_or_none(values.get("summary_api_key")),
+    )
+
+
+_DIAGNOSTIC_IMAGE_DATA_URL = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+)
+
+
+def _diagnose_openai_chat(
+    *,
+    base_url: str,
+    api_key: str | None,
+    model: str,
+    messages: list[dict[str, Any]],
+    api_path: str | None = None,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    url = _join_openai_chat_url(base_url, api_path)
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    started = time.perf_counter()
+    try:
+        response = requests.post(
+            url,
+            headers=headers,
+            json={
+                "model": model,
+                "messages": messages,
+                "temperature": 0,
+                "max_tokens": 16,
+            },
+            timeout=max(1, int(timeout or 20)),
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000)
+        if response.status_code >= 400:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "elapsed_ms": elapsed_ms,
+                "message": _diagnostic_error_message(response),
+            }
+        content, parse_error = _diagnostic_response_content(response)
+        if parse_error:
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "elapsed_ms": elapsed_ms,
+                "message": parse_error,
+            }
+        if "ok" not in content.lower():
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "elapsed_ms": elapsed_ms,
+                "message": f"模型有响应，但未返回 OK：{content[:200] or '空响应'}",
+            }
+        return {
+            "ok": True,
+            "status_code": response.status_code,
+            "elapsed_ms": elapsed_ms,
+            "message": content,
+        }
+    except requests.RequestException as exc:
+        return {
+            "ok": False,
+            "status_code": None,
+            "elapsed_ms": round((time.perf_counter() - started) * 1000),
+            "message": str(exc),
+        }
+
+
+def _join_openai_chat_url(base_url: str, api_path: str | None = None) -> str:
+    path = (api_path or "").strip()
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    base = base_url.rstrip("/")
+    if not path:
+        return base
+    return base + "/" + path.lstrip("/")
+
+
+def _diagnostic_response_content(response: requests.Response) -> tuple[str, str | None]:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return "", f"接口返回的不是有效 JSON：{text[:200] if text else '空响应'}"
+    if not isinstance(payload, dict):
+        return "", "接口返回 JSON 结构无效：根对象不是 object"
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return "", f"接口未返回 choices，无法确认 key/model 可用：{str(payload)[:300]}"
+    first = choices[0]
+    if not isinstance(first, dict):
+        return "", "接口返回 choices 结构无效"
+    message = first.get("message")
+    if not isinstance(message, dict):
+        return "", "接口返回 choices[0].message 结构无效"
+    content = message.get("content", "")
+    if isinstance(content, list) and content and isinstance(content[0], dict):
+        content = content[0].get("text", "")
+    text = str(content or "").strip()
+    if not text:
+        return "", "模型返回了空内容，无法确认 key/model 可用"
+    return text[:200], None
+
+
+def _diagnostic_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = response.text.strip()
+        return text[:300] if text else f"HTTP {response.status_code}"
+    error = payload.get("error") if isinstance(payload, dict) else None
+    if isinstance(error, dict):
+        message = _text_or_none(error.get("message"))
+        if message:
+            return message[:300]
+    return str(payload)[:300]
+
+
+def _diagnostic_timeout(value: Any) -> int:
+    try:
+        return max(1, min(60, int(value or 20)))
+    except (TypeError, ValueError):
+        return 20
 
 
 def _render_index() -> str:
@@ -1100,6 +1682,8 @@ def _render_index() -> str:
     .dropzone.dragover { border-color:var(--accent); background:#10201f; }
     .source-grid { display:grid; grid-template-columns:1fr; gap:10px; }
     .quick-actions { display:grid; grid-template-columns:1fr 1fr; gap:10px; align-items:end; }
+    .action-buttons { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+    .diagnostic-message { min-height:18px; }
     .submit-row { display:grid; grid-template-columns:2fr 1fr; gap:10px; }
     .accordion-stack { display:grid; gap:8px; margin-top:2px; }
     details.accordion { border:1px solid var(--line); border-radius:10px; background:#14171c; }
@@ -1126,6 +1710,8 @@ def _render_index() -> str:
     .job-card.disabled { opacity:.7; }
     .job-card > .row { min-width:0; }
     .job-card .status { flex-shrink:0; }
+    .job-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+    .job-actions button { width:auto; padding:6px 10px; font-size:12px; }
     .job-title-row { justify-content:flex-start; gap:10px; min-width:0; flex:1; }
     .job-title { display:block; min-width:0; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .truncate { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -1154,7 +1740,7 @@ def _render_index() -> str:
     }
     @media (max-width: 680px) {
       .page { padding:12px; }
-      .grid2,.grid3,.quick-actions,.submit-row,.auth-actions { grid-template-columns:1fr; }
+      .grid2,.grid3,.quick-actions,.action-buttons,.submit-row,.auth-actions { grid-template-columns:1fr; }
       .stats { grid-template-columns:repeat(2,minmax(0,1fr)); }
     }
   </style>
@@ -1286,8 +1872,12 @@ def _render_index() -> str:
               </label>
               <div class="quick-actions">
                 <div class="hint">OCR API 按 OpenAI 兼容格式配置：base + path + api_key + model。</div>
-                <button id="save-vision-openai-btn" class="secondary" type="button">设为默认 OCR API</button>
+                <div class="action-buttons">
+                  <button id="test-vision-openai-btn" class="secondary" type="button">检测 OCR API</button>
+                  <button id="save-vision-openai-btn" class="secondary" type="button">设为默认 OCR API</button>
+                </div>
               </div>
+              <div id="vision-openai-diagnostic" class="hint diagnostic-message"></div>
             </div>
           </details>
 
@@ -1312,8 +1902,12 @@ def _render_index() -> str:
               </div>
               <div class="quick-actions">
                 <div class="hint">这组配置同时用于总结 AI 和矫正 AI，会优先于默认 SiliconFlow 配置。</div>
-                <button id="save-summary-openai-btn" class="secondary" type="button">设为默认总结/矫正 AI</button>
+                <div class="action-buttons">
+                  <button id="test-summary-openai-btn" class="secondary" type="button">检测总结/矫正 AI</button>
+                  <button id="save-summary-openai-btn" class="secondary" type="button">设为默认总结/矫正 AI</button>
+                </div>
               </div>
+              <div id="summary-openai-diagnostic" class="hint diagnostic-message"></div>
             </div>
           </details>
 
@@ -1421,7 +2015,9 @@ def _render_index() -> str:
       document.getElementById("refresh-btn").addEventListener("click", refreshHistory);
       document.getElementById("save-output-dir-btn").addEventListener("click", saveDefaultOutputDir);
       document.getElementById("save-vision-openai-btn").addEventListener("click", saveDefaultVisionOpenAi);
+      document.getElementById("test-vision-openai-btn").addEventListener("click", testVisionOpenAi);
       document.getElementById("save-summary-openai-btn").addEventListener("click", saveDefaultSummaryOpenAi);
+      document.getElementById("test-summary-openai-btn").addEventListener("click", testSummaryOpenAi);
       document.getElementById("media-file").addEventListener("change", onFilePicked);
       document.getElementById("history-filter").addEventListener("input", () => renderHistory(state.jobs));
       document.getElementById("select-visible-btn").addEventListener("click", selectVisibleJobs);
@@ -1641,6 +2237,10 @@ def _render_index() -> str:
           <div class="hint">进度：${Number(job.progress || 0)}%${job.queue_position ? ` · 队列第 ${job.queue_position} 位` : ""}</div>
           <div class="hint truncate">${escapeHtml(job.source || "")}</div>
           <div class="hint">${escapeHtml(job.updated_at || "")}</div>
+          <div class="job-actions">
+            ${job.can_retry ? `<button type="button" class="secondary" onclick="event.stopPropagation(); retryJob('${escapeAttr(job.job_id)}', collectRetryOverrides()); return false;">重跑</button>` : ""}
+            ${job.status !== "running" ? `<button type="button" class="secondary" onclick="event.stopPropagation(); deleteJob('${escapeAttr(job.job_id)}'); return false;">删除数据</button>` : ""}
+          </div>
         `;
         const checkbox = item.querySelector('input[type="checkbox"]');
         checkbox.addEventListener("click", (event) => event.stopPropagation());
@@ -1676,8 +2276,8 @@ def _render_index() -> str:
       lines.push(`<div class="hint">状态说明：${escapeHtml(job.message || "")}</div>`);
       lines.push(`<div class="links">
         ${job.can_retry ? `<a href="#" onclick="retryJob('${escapeAttr(job.job_id)}', collectRetryOverrides()); return false;">重试</a>` : ""}
-        ${job.can_cancel ? `<a href="#" onclick="cancelJob('${escapeAttr(job.job_id)}'); return false;">取消排队</a>` : ""}
-        <a href="#" onclick="deleteJob('${escapeAttr(job.job_id)}'); return false;">删除历史</a>
+        ${job.can_cancel ? `<a href="#" onclick="cancelJob('${escapeAttr(job.job_id)}'); return false;">终止任务</a>` : ""}
+        <a href="#" onclick="deleteJob('${escapeAttr(job.job_id)}'); return false;">删除历史和数据</a>
       </div>`);
       if (job.can_continue && (job.available_resume_stages || []).length) {
         const options = (job.available_resume_stages || [])
@@ -1839,7 +2439,7 @@ def _render_index() -> str:
     }
 
     async function deleteJob(jobId) {
-      if (!window.confirm("删除该任务历史并清理对应输出目录？")) return;
+      if (!window.confirm("删除该任务历史，并清理该任务记录的数据文件？")) return;
       const response = await fetch(`/api/jobs/${jobId}?delete_files=true`, { method: "DELETE" });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
@@ -1913,6 +2513,28 @@ def _render_index() -> str:
       setFormMessage("默认 OCR API 配置已保存");
     }
 
+    async function testVisionOpenAi() {
+      const button = document.getElementById("test-vision-openai-btn");
+      const messageNode = document.getElementById("vision-openai-diagnostic");
+      const formData = collectFields([
+        "vision_api_config_id",
+        "vision_api_base",
+        "vision_api_path",
+        "vision_api_key",
+        "vision_model",
+        "vision_timeout",
+      ]);
+      await runProviderDiagnostic({
+        url: "/api/diagnostics/vision-openai",
+        formData,
+        button,
+        messageNode,
+        pendingText: "正在用 key 和 model 请求 OCR 模型...",
+        successText: "OCR 模型请求成功",
+        failureText: "OCR 模型请求失败",
+      });
+    }
+
     async function saveDefaultSummaryOpenAi() {
       const formData = new FormData();
       for (const name of [
@@ -1931,6 +2553,71 @@ def _render_index() -> str:
       }
       persistForm();
       setFormMessage("默认总结/矫正 AI 配置已保存");
+    }
+
+    async function testSummaryOpenAi() {
+      const button = document.getElementById("test-summary-openai-btn");
+      const messageNode = document.getElementById("summary-openai-diagnostic");
+      const formData = collectFields([
+        "summary_api_base",
+        "summary_api_key",
+        "summary_model",
+      ]);
+      await runProviderDiagnostic({
+        url: "/api/diagnostics/summary-openai",
+        formData,
+        button,
+        messageNode,
+        pendingText: "正在用 key 和 model 请求总结/矫正模型...",
+        successText: "总结/矫正模型请求成功",
+        failureText: "总结/矫正模型请求失败",
+      });
+    }
+
+    function collectFields(names) {
+      const formData = new FormData();
+      for (const name of names) {
+        const field = document.querySelector(`[name="${name}"]`);
+        formData.set(name, field ? field.value : "");
+      }
+      return formData;
+    }
+
+    async function runProviderDiagnostic({ url, formData, button, messageNode, pendingText, successText, failureText }) {
+      if (button) button.disabled = true;
+      if (messageNode) {
+        messageNode.textContent = pendingText;
+        messageNode.style.color = "#94a3b8";
+      }
+      try {
+        const response = await fetch(url, { method: "POST", body: formData });
+        const payload = await response.json();
+        const elapsed = payload.elapsed_ms ? ` · ${payload.elapsed_ms}ms` : "";
+        const status = payload.status_code ? ` · HTTP ${payload.status_code}` : "";
+        if (!response.ok || !payload.ok) {
+          const message = payload.detail || payload.message || payload.error || failureText;
+          if (messageNode) {
+            messageNode.textContent = `${failureText}${status}${elapsed}：${message}`;
+            messageNode.style.color = "#ef4444";
+          }
+          setFormMessage(message, true);
+          return;
+        }
+        if (messageNode) {
+          messageNode.textContent = `${successText}${status}${elapsed}`;
+          messageNode.style.color = "#22c55e";
+        }
+        setFormMessage(successText);
+      } catch (error) {
+        const message = error && error.message ? error.message : failureText;
+        if (messageNode) {
+          messageNode.textContent = `${failureText}：${message}`;
+          messageNode.style.color = "#ef4444";
+        }
+        setFormMessage(message, true);
+      } finally {
+        if (button) button.disabled = false;
+      }
     }
 
     async function createBiliQrCode() {
@@ -2258,23 +2945,81 @@ def _delete_file_quietly(path: Path) -> None:
 
 
 def _delete_job_files(settings: Settings, record: WebJobRecord) -> None:
+    candidates = _record_data_path_candidates(record)
+    for path in _dedupe_paths(candidates):
+        _delete_job_path(settings, path)
+
+
+def _record_data_path_candidates(record: WebJobRecord) -> list[Path]:
+    paths: list[Path] = []
+    for text in record.data_paths or []:
+        value = _text_or_none(text)
+        if value:
+            paths.append(Path(value).expanduser())
     workdir = _extract_workdir(record)
-    if workdir and _is_under_data_root(settings, workdir):
+    if workdir:
+        paths.append(workdir)
+    return paths
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
         try:
-            shutil.rmtree(workdir, ignore_errors=True)
+            key = str(path.resolve())
         except OSError:
-            pass
-    source = _text_or_none(record.request.get("source"))
-    if not source:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return result
+
+
+def _delete_job_path(settings: Settings, path: Path) -> None:
+    try:
+        resolved = path.resolve()
+    except OSError:
         return
-    source_path = Path(source).expanduser()
+    if not _is_safe_job_delete_path(settings, resolved):
+        return
+    if resolved.is_dir():
+        try:
+            shutil.rmtree(resolved, ignore_errors=True)
+        except OSError:
+            return
+    elif resolved.is_file():
+        _delete_file_quietly(resolved)
+
+
+def _is_path_under_or_equal(path: Path, parent: Path) -> bool:
+    try:
+        resolved = path.resolve()
+        parent_resolved = parent.resolve()
+    except OSError:
+        return False
+    if resolved == parent_resolved:
+        return True
+    try:
+        resolved.relative_to(parent_resolved)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_safe_job_delete_path(settings: Settings, path: Path) -> bool:
+    data_root = settings.data_dir.resolve()
     uploads_root = (settings.data_dir / "web_ui" / "uploads").resolve()
     try:
-        resolved = source_path.resolve()
-        resolved.relative_to(uploads_root)
-    except (OSError, ValueError):
-        return
-    _delete_file_quietly(resolved)
+        path.relative_to(data_root)
+    except ValueError:
+        return False
+    if path == data_root or path == settings.data_dir.resolve():
+        return False
+    if path == uploads_root:
+        return False
+    return True
 
 
 def build_jobs_export_archive(settings: Settings, manager: WebJobManager, job_ids: list[str]) -> Path:
@@ -2390,6 +3135,175 @@ def _invoke_run_quickread(
     if "event_callback" in parameters:
         return runner(options, event_callback=event_callback)
     return runner(options)
+
+
+_ORIGINAL_INVOKE_RUN_QUICKREAD = _invoke_run_quickread
+
+
+def _should_run_job_in_worker_process(runner_invoker: Any, runner: Any) -> bool:
+    return runner_invoker is _ORIGINAL_INVOKE_RUN_QUICKREAD and runner is _ORIGINAL_RUN_QUICKREAD
+
+
+def _write_worker_input(input_path: Path, settings: Settings, values: dict[str, Any]) -> None:
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "settings": _jsonable_worker_value(_worker_settings_payload(settings)),
+        "values": _jsonable_worker_value(_worker_values_payload(values)),
+    }
+    input_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _worker_settings_payload(settings: Settings) -> dict[str, Any]:
+    payload = asdict(settings)
+    for key in SENSITIVE_SETTINGS_KEYS:
+        payload[key] = None
+    return payload
+
+
+def _worker_values_payload(values: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in values.items() if key not in SENSITIVE_JOB_KEYS}
+
+
+def _build_worker_env(settings: Settings, values: dict[str, Any]) -> dict[str, str]:
+    env = dict(os.environ)
+    for name, value in {
+        "VIVID_WORKER_BILI_COOKIE": _text_or_none(values.get("bili_cookie")) or settings.bili_cookie,
+        "VIVID_WORKER_SESSDATA": _text_or_none(values.get("sessdata")) or settings.sessdata,
+        "VIVID_WORKER_SUMMARY_API_KEY": (
+            _text_or_none(values.get("summary_api_key")) or settings.siliconflow_api_key
+        ),
+        "VIVID_WORKER_VISION_API_KEY": (
+            _text_or_none(values.get("vision_api_key")) or settings.vision_api_key
+        ),
+        "VIVID_WORKER_DASHSCOPE_API_KEY": settings.dashscope_api_key,
+    }.items():
+        if value:
+            env[name] = value
+        else:
+            env.pop(name, None)
+    return env
+
+
+def _jsonable_worker_value(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable_worker_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable_worker_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable_worker_value(item) for item in value]
+    return value
+
+
+def _start_worker_process(
+    settings: Settings,
+    *,
+    input_path: Path,
+    events_path: Path,
+    result_path: Path,
+    stdout_path: Path,
+    stderr_path: Path,
+    env: dict[str, str],
+) -> subprocess.Popen:
+    command = [
+        sys.executable,
+        "-m",
+        "app.web_worker",
+        str(input_path),
+        str(events_path),
+        str(result_path),
+    ]
+    kwargs: dict[str, Any] = {
+        "cwd": str(settings.repo_root),
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        kwargs["start_new_session"] = True
+    stdout_path.parent.mkdir(parents=True, exist_ok=True)
+    with stdout_path.open("ab") as stdout, stderr_path.open("ab") as stderr:
+        return subprocess.Popen(command, stdout=stdout, stderr=stderr, env=env, **kwargs)
+
+
+def _terminate_process_tree(pid: int, *, process: subprocess.Popen | None = None, timeout_seconds: float = 5.0) -> None:
+    if pid <= 0:
+        return
+    if sys.platform == "win32":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except OSError:
+            pass
+        if process is not None:
+            try:
+                process.wait(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=timeout_seconds)
+                except (OSError, subprocess.TimeoutExpired):
+                    return
+        return
+
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        return
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    if process is not None:
+        try:
+            process.wait(timeout=timeout_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    if process is not None:
+        try:
+            process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired:
+            return
+
+
+def _read_worker_result(result_path: Path) -> dict[str, Any]:
+    if not result_path.exists():
+        return {"ok": False, "error": "worker exited without writing a result"}
+    try:
+        payload = json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"ok": False, "error": f"worker result is unreadable: {exc}"}
+    return payload if isinstance(payload, dict) else {"ok": False, "error": "worker result is invalid"}
+
+
+def _worker_error_message(payload: dict[str, Any], stderr_path: Path, returncode: int | None) -> str:
+    error = _text_or_none(payload.get("error"))
+    if error:
+        return error
+    stderr_tail = _tail_text(stderr_path)
+    if stderr_tail:
+        return f"worker exited with code {returncode}: {stderr_tail}"
+    return f"worker exited with code {returncode}"
+
+
+def _tail_text(path: Path, limit: int = 2000) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    text = text.strip()
+    if not text:
+        return None
+    return text[-limit:]
 
 
 def _build_event(stage: str, message: str, data: dict[str, Any] | None = None) -> dict[str, Any]:

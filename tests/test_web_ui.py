@@ -1,4 +1,7 @@
 import io
+import json
+import subprocess
+import sys
 import time
 from types import SimpleNamespace
 from pathlib import Path
@@ -14,7 +17,8 @@ from app.models.source import SourceInfo
 from app.models.summary import SummaryResult
 from app.models.transcript import TranscriptResult
 from app.services.run_state import save_run_state
-from app.web import app, build_open_folder_command
+from app.web import WebJobRecord, WebJobManager, app, build_open_folder_command
+from app.web_worker import _settings_from_payload
 
 
 def _build_settings(tmp_path: Path) -> Settings:
@@ -254,6 +258,286 @@ def test_web_default_summary_openai_can_be_saved(tmp_path, monkeypatch):
     assert defaults["summary_api_base"] == "https://llm.example.com/v1/chat/completions"
     assert defaults["summary_api_key"] == "sk-summary"
     assert defaults["summary_model"] == "demo-summary-model"
+
+
+def test_web_diagnose_vision_openai_posts_current_config(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.web.requests.post", fake_post)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/diagnostics/vision-openai",
+        data={
+            "vision_api_base": "https://vision.example.com",
+            "vision_api_path": "/v1/chat/completions",
+            "vision_api_key": "sk-vision",
+            "vision_model": "vision-model",
+            "vision_timeout": "7",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert captured["url"] == "https://vision.example.com/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-vision"
+    assert captured["json"]["model"] == "vision-model"
+    assert captured["json"]["messages"][0]["content"][1]["type"] == "image_url"
+    assert captured["timeout"] == 7
+
+
+def test_web_diagnose_vision_openai_uses_selected_config_env_key(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    monkeypatch.setenv("VISION_ENV_KEY", "sk-from-env")
+    settings.vision_api_configs_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "env-cfg",
+                        "name": "Env",
+                        "api_base": "https://vision-env.example.com",
+                        "api_path": "/v1/chat/completions",
+                        "model": "vision-env-model",
+                        "timeout": 9,
+                        "api_key_env": "VISION_ENV_KEY",
+                    }
+                ],
+                "selected_id": "env-cfg",
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.web.requests.post", fake_post)
+    client = TestClient(app)
+
+    response = client.post("/api/diagnostics/vision-openai", data={"vision_api_config_id": "env-cfg"})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured["url"] == "https://vision-env.example.com/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-from-env"
+    assert captured["json"]["model"] == "vision-env-model"
+
+
+def test_web_diagnose_summary_openai_posts_current_config(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.web.requests.post", fake_post)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/diagnostics/summary-openai",
+        data={
+            "summary_api_base": "https://summary.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "summary-model",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert captured["url"] == "https://summary.example.com/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-summary"
+    assert captured["json"]["model"] == "summary-model"
+    assert captured["json"]["messages"][1]["content"] == "Reply with OK only."
+    assert captured["timeout"] == 20
+
+
+def test_web_diagnose_summary_openai_uses_provider_env_key(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    monkeypatch.setenv("SUMMARY_ENV_KEY", "sk-summary-env")
+    settings.summary_providers_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "env-summary",
+                        "name": "Env Summary",
+                        "base_url": "https://summary-env.example.com/v1/chat/completions",
+                        "model": "summary-env-model",
+                        "api_key_env": "SUMMARY_ENV_KEY",
+                        "enabled": True,
+                    }
+                ],
+                "selected_id": "env-summary",
+            }
+        ),
+        encoding="utf-8",
+    )
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "OK"}}]}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return FakeResponse()
+
+    monkeypatch.setattr("app.web.requests.post", fake_post)
+    client = TestClient(app)
+
+    response = client.post("/api/diagnostics/summary-openai", data={})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert captured["url"] == "https://summary-env.example.com/v1/chat/completions"
+    assert captured["headers"]["Authorization"] == "Bearer sk-summary-env"
+    assert captured["json"]["model"] == "summary-env-model"
+
+
+def test_web_diagnose_summary_openai_reports_http_error(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    class FakeResponse:
+        status_code = 401
+        text = ""
+
+        def json(self):
+            return {"error": {"message": "invalid api key"}}
+
+    monkeypatch.setattr("app.web.requests.post", lambda *args, **kwargs: FakeResponse())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/diagnostics/summary-openai",
+        data={
+            "summary_api_base": "https://summary.example.com/v1/chat/completions",
+            "summary_api_key": "bad-key",
+            "summary_model": "summary-model",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["status_code"] == 401
+    assert payload["message"] == "invalid api key"
+
+
+def test_web_diagnose_summary_openai_rejects_200_without_choices(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"status": "reachable"}
+
+    monkeypatch.setattr("app.web.requests.post", lambda *args, **kwargs: FakeResponse())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/diagnostics/summary-openai",
+        data={
+            "summary_api_base": "https://summary.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "summary-model",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert "choices" in payload["message"]
+
+
+def test_web_diagnose_summary_openai_requires_ok_response(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"choices": [{"message": {"content": "model is online"}}]}
+
+    monkeypatch.setattr("app.web.requests.post", lambda *args, **kwargs: FakeResponse())
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/diagnostics/summary-openai",
+        data={
+            "summary_api_base": "https://summary.example.com/v1/chat/completions",
+            "summary_api_key": "sk-summary",
+            "summary_model": "summary-model",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert "未返回 OK" in payload["message"]
 
 
 def test_web_quickread_upload_works(tmp_path, monkeypatch):
@@ -914,6 +1198,8 @@ def test_web_job_retry_delete_and_open_folder(tmp_path, monkeypatch):
         time.sleep(0.05)
     assert first_job is not None
     assert first_job["status"] == "completed"
+    assert first_job["data_paths"]
+    assert first_job["result"]["files"]["workdir"] in first_job["data_paths"]
 
     open_response = client.post(
         "/api/open-folder",
@@ -943,6 +1229,190 @@ def test_web_job_retry_delete_and_open_folder(tmp_path, monkeypatch):
 
     missing_response = client.get(f"/api/jobs/{first_job_id}")
     assert missing_response.status_code == 404
+
+
+def test_web_job_delete_cleans_recorded_failed_job_data_paths(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+
+    def fake_run(_options, event_callback=None):
+        workdir = settings.data_dir / "failed-demo"
+        artifacts_dir = workdir / "artifacts"
+        media_dir = workdir / "media"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        media_dir.mkdir(parents=True, exist_ok=True)
+        (artifacts_dir / "partial.txt").write_text("partial", encoding="utf-8")
+        (media_dir / "partial.mp4").write_text("video", encoding="utf-8")
+        if event_callback:
+            event_callback(
+                "prepare",
+                "创建工作目录",
+                {
+                    "workdir": str(workdir),
+                    "artifacts_dir": str(artifacts_dir),
+                    "media_path": str(media_dir / "partial.mp4"),
+                },
+            )
+        raise RuntimeError("failed after writing files")
+
+    monkeypatch.setattr("app.web.run_quickread", fake_run)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/api/jobs",
+        data={"source_url": "https://example.com/demo", "project_name": "failed-demo"},
+    )
+    assert create_response.status_code == 200
+    job_id = create_response.json()["job"]["job_id"]
+
+    failed_job = None
+    for _ in range(40):
+        response = client.get(f"/api/jobs/{job_id}")
+        failed_job = response.json()["job"]
+        if failed_job["status"] == "failed":
+            break
+        time.sleep(0.05)
+
+    assert failed_job is not None
+    assert failed_job["status"] == "failed"
+    assert settings.data_dir.joinpath("failed-demo").exists()
+    assert str(settings.data_dir / "failed-demo") in failed_job["data_paths"]
+    assert str(settings.data_dir / "failed-demo" / "artifacts") in failed_job["data_paths"]
+
+    delete_response = client.delete(f"/api/jobs/{job_id}", params={"delete_files": "true"})
+
+    assert delete_response.status_code == 200
+    assert not settings.data_dir.joinpath("failed-demo").exists()
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+
+
+def test_web_job_delete_does_not_remove_non_uploaded_local_source(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    source_path = settings.data_dir / "library" / "input.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("user media", encoding="utf-8")
+
+    def fake_run(options, event_callback=None):
+        workdir = settings.data_dir / "local-source-result"
+        artifacts_dir = workdir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        bundle = ArtifactBundle(
+            workdir=workdir,
+            artifacts_dir=artifacts_dir,
+            quickread_markdown=artifacts_dir / "quickread.md",
+            transcript_text=artifacts_dir / "transcript.txt",
+            summary_markdown=artifacts_dir / "summary.md",
+            summary_json=artifacts_dir / "summary.json",
+            metadata_json=artifacts_dir / "metadata.json",
+        )
+        for path in [
+            bundle.quickread_markdown,
+            bundle.transcript_text,
+            bundle.summary_markdown,
+            bundle.summary_json,
+            bundle.metadata_json,
+        ]:
+            path.write_text("ok", encoding="utf-8")
+        return OrchestratorResult(
+            source=SourceInfo(raw_source=options.source, platform="local", title="local-source"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=bundle,
+            rendered="rendered",
+        )
+
+    monkeypatch.setattr("app.web.run_quickread", fake_run)
+    client = TestClient(app)
+
+    create_response = client.post("/api/jobs", data={"source_url": str(source_path)})
+    assert create_response.status_code == 200
+    job_id = create_response.json()["job"]["job_id"]
+
+    completed_job = None
+    for _ in range(40):
+        response = client.get(f"/api/jobs/{job_id}")
+        completed_job = response.json()["job"]
+        if completed_job["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    assert completed_job is not None
+    assert completed_job["status"] == "completed"
+    assert str(source_path) not in completed_job["data_paths"]
+
+    delete_response = client.delete(f"/api/jobs/{job_id}", params={"delete_files": "true"})
+
+    assert delete_response.status_code == 200
+    assert source_path.exists()
+    assert not settings.data_dir.joinpath("local-source-result").exists()
+
+
+def test_web_job_delete_ignores_event_media_path_outside_workdir(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    _write_config_files(settings)
+    monkeypatch.setattr("app.web.load_settings", lambda: settings)
+    source_path = settings.data_dir / "library" / "event-source.mp4"
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_text("user media", encoding="utf-8")
+
+    def fake_run(options, event_callback=None):
+        workdir = settings.data_dir / "event-source-result"
+        artifacts_dir = workdir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        if event_callback:
+            event_callback("media_ready", "媒体准备完成", {"media_path": str(source_path)})
+        bundle = ArtifactBundle(
+            workdir=workdir,
+            artifacts_dir=artifacts_dir,
+            quickread_markdown=artifacts_dir / "quickread.md",
+            transcript_text=artifacts_dir / "transcript.txt",
+            summary_markdown=artifacts_dir / "summary.md",
+            summary_json=artifacts_dir / "summary.json",
+            metadata_json=artifacts_dir / "metadata.json",
+        )
+        for path in [
+            bundle.quickread_markdown,
+            bundle.transcript_text,
+            bundle.summary_markdown,
+            bundle.summary_json,
+            bundle.metadata_json,
+        ]:
+            path.write_text("ok", encoding="utf-8")
+        return OrchestratorResult(
+            source=SourceInfo(raw_source=options.source, platform="local", title="event-source"),
+            transcript=TranscriptResult(text="逐字稿", acquisition_method="Internal Whisper base"),
+            summary=SummaryResult(one_line="一句话", detailed="详细", key_points=["a"], provider="test"),
+            artifacts=bundle,
+            rendered="rendered",
+        )
+
+    monkeypatch.setattr("app.web.run_quickread", fake_run)
+    client = TestClient(app)
+
+    create_response = client.post("/api/jobs", data={"source_url": str(source_path)})
+    assert create_response.status_code == 200
+    job_id = create_response.json()["job"]["job_id"]
+
+    completed_job = None
+    for _ in range(40):
+        response = client.get(f"/api/jobs/{job_id}")
+        completed_job = response.json()["job"]
+        if completed_job["status"] == "completed":
+            break
+        time.sleep(0.05)
+
+    assert completed_job is not None
+    assert completed_job["status"] == "completed"
+    assert str(source_path) not in completed_job["data_paths"]
+
+    delete_response = client.delete(f"/api/jobs/{job_id}", params={"delete_files": "true"})
+
+    assert delete_response.status_code == 200
+    assert source_path.exists()
+    assert not settings.data_dir.joinpath("event-source-result").exists()
 
 
 def test_web_job_retry_preserves_summary_api_key_without_exposing_it(tmp_path, monkeypatch):
@@ -1007,6 +1477,8 @@ def test_web_job_retry_preserves_summary_api_key_without_exposing_it(tmp_path, m
     assert first_job is not None
     assert first_job["status"] == "completed"
     assert "summary_api_key" not in first_job["request"]
+    history_text = (settings.data_dir / "web_ui" / "jobs.json").read_text(encoding="utf-8")
+    assert "sk-summary" not in history_text
 
     retry_response = client.post(f"/api/jobs/{first_job_id}/retry")
     assert retry_response.status_code == 200
@@ -1112,6 +1584,124 @@ def test_web_queue_progress_and_cancel(tmp_path, monkeypatch):
     assert bootstrap_response.status_code == 200
     stats = bootstrap_response.json()["stats"]
     assert stats["cancelled"] >= 1
+
+
+def test_web_job_cancel_terminates_running_worker_process(tmp_path):
+    manager = WebJobManager(tmp_path / "jobs.json")
+    command = [sys.executable, "-c", "import time; time.sleep(60)"]
+    kwargs = {}
+    if sys.platform != "win32":
+        kwargs["start_new_session"] = True
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **kwargs)
+    record = WebJobRecord(
+        job_id="job-running",
+        status="running",
+        stage="processing",
+        progress=55,
+        message="running",
+        created_at="2026-05-09T00:00:00",
+        updated_at="2026-05-09T00:00:00",
+        source="local",
+        request={"source": "local"},
+        events=[],
+        worker_pid=process.pid,
+    )
+
+    try:
+        with manager.lock:
+            manager.records[record.job_id] = record
+            manager.order.append(record.job_id)
+            manager.running_processes[record.job_id] = process
+        cancelled = manager.cancel(record.job_id)
+        assert cancelled["status"] == "cancelled"
+        assert cancelled["can_cancel"] is False
+        assert process.wait(timeout=5) is not None
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+
+def test_web_worker_input_does_not_persist_credentials(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    input_path = tmp_path / "input.json"
+    values = {
+        "source": "https://example.com/demo",
+        "summary_api_key": "sk-summary",
+        "vision_api_key": "sk-vision",
+        "bili_cookie": "SESSDATA=secret",
+        "sessdata": "sess-secret",
+        "project_name": "demo",
+    }
+    settings.siliconflow_api_key = "settings-summary"
+    settings.vision_api_key = "settings-vision"
+    settings.bili_cookie = "settings-cookie"
+    settings.sessdata = "settings-sess"
+
+    from app import web
+
+    web._write_worker_input(input_path, settings, values)
+    payload = json.loads(input_path.read_text(encoding="utf-8"))
+
+    serialized = input_path.read_text(encoding="utf-8")
+    for secret in [
+        "sk-summary",
+        "sk-vision",
+        "SESSDATA=secret",
+        "sess-secret",
+        "settings-summary",
+        "settings-vision",
+        "settings-cookie",
+        "settings-sess",
+    ]:
+        assert secret not in serialized
+    assert payload["values"]["project_name"] == "demo"
+    assert "summary_api_key" not in payload["values"]
+    assert payload["settings"]["siliconflow_api_key"] is None
+    assert "summary_api_key" not in payload["settings"]
+    _settings_from_payload(payload["settings"])
+
+    env = web._build_worker_env(settings, values)
+
+    assert env["VIVID_WORKER_SUMMARY_API_KEY"] == "sk-summary"
+    assert env["VIVID_WORKER_VISION_API_KEY"] == "sk-vision"
+    assert env["VIVID_WORKER_BILI_COOKIE"] == "SESSDATA=secret"
+    assert env["VIVID_WORKER_SESSDATA"] == "sess-secret"
+
+
+def test_web_job_load_marks_running_jobs_interrupted(tmp_path, monkeypatch):
+    history_path = tmp_path / "jobs.json"
+    history_path.write_text(
+        """[
+  {
+    "job_id": "stale",
+    "status": "running",
+    "stage": "processing",
+    "progress": 55,
+    "message": "running",
+    "created_at": "2026-05-09T00:00:00",
+    "updated_at": "2026-05-09T00:00:00",
+    "source": "local",
+    "request": {"source": "local"},
+    "worker_pid": 12345
+  }
+]
+""",
+        encoding="utf-8",
+    )
+
+    from app import web
+
+    terminated_pids = []
+    monkeypatch.setattr(web, "_terminate_process_tree", lambda pid: terminated_pids.append(pid))
+    manager = WebJobManager(history_path)
+    job = manager.get_job("stale")
+
+    assert job is not None
+    assert job["status"] == "failed"
+    assert job["worker_pid"] is None
+    assert "重启" in job["error"]
+    assert terminated_pids == [12345]
 
 
 def test_web_job_manager_defaults_to_single_worker(tmp_path):
