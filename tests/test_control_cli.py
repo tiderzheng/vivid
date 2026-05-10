@@ -30,7 +30,7 @@ def _build_settings(tmp_path: Path) -> Settings:
         ears4_api="http://127.0.0.1:7860",
         eyes_api="http://127.0.0.1:9531",
         default_format="both",
-        default_model="base",
+        default_model="large-v3-turbo",
         language="zh",
         transcription_preset_id=None,
         acquisition_mode="auto",
@@ -84,7 +84,7 @@ def test_build_paths_payload_includes_shell_scripts(tmp_path):
     assert payload["configs"]["summary"]["providers"].endswith("configs\\summary\\providers.json")
 
 
-def test_build_doctor_payload_reports_torch_and_helpers(tmp_path, monkeypatch):
+def test_build_doctor_payload_reports_faster_whisper_and_helpers(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     monkeypatch.setattr(
         "app.control_cli.inspect_ffmpeg",
@@ -107,10 +107,21 @@ def test_build_doctor_payload_reports_torch_and_helpers(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("app.control_cli.shutil.which", lambda name: name)
     monkeypatch.setattr("app.control_cli._module_available", lambda name: True)
+    monkeypatch.setattr("app.control_cli._module_imports", lambda name: True)
     payload = build_doctor_payload(settings)
     assert payload["ok"] is True
+    assert payload["checks"]["faster_whisper"]["available"] is True
+    assert payload["checks"]["faster_whisper"]["required"] is True
+    assert payload["checks"]["ctranslate2"]["available"] is True
+    assert payload["checks"]["ctranslate2"]["required"] is True
+    assert payload["checks"]["funasr"]["available"] is True
+    assert payload["checks"]["funasr"]["required"] is True
+    assert payload["checks"]["modelscope"]["available"] is True
+    assert payload["checks"]["modelscope"]["required"] is True
     assert payload["checks"]["torch"]["available"] is True
-    assert payload["checks"]["torch"]["required"] is False
+    assert payload["checks"]["torch"]["required"] is True
+    assert payload["checks"]["torchaudio"]["available"] is True
+    assert payload["checks"]["torchaudio"]["required"] is True
     assert payload["checks"]["bili_helper"]["exists"] is True
     assert payload["checks"]["douyin_helper"]["exists"] is True
 
@@ -144,13 +155,14 @@ def test_build_doctor_payload_treats_node_and_opencv_as_optional(tmp_path, monke
 
     monkeypatch.setattr("app.control_cli.shutil.which", fake_which)
     monkeypatch.setattr("app.control_cli._module_available", lambda name: True)
+    monkeypatch.setattr("app.control_cli._module_imports", lambda name: True)
     payload = build_doctor_payload(settings)
     assert payload["ok"] is True
     assert payload["checks"]["node"]["required"] is False
     assert payload["checks"]["opencv"]["required"] is False
 
 
-def test_build_doctor_payload_treats_torch_as_optional(tmp_path, monkeypatch):
+def test_build_doctor_payload_requires_ctranslate2(tmp_path, monkeypatch):
     settings = _build_settings(tmp_path)
     monkeypatch.setattr(
         "app.control_cli.inspect_ffmpeg",
@@ -173,15 +185,82 @@ def test_build_doctor_payload_treats_torch_as_optional(tmp_path, monkeypatch):
     )
 
     def fake_module_available(name: str) -> bool:
-        return name != "torch"
+        return name != "ctranslate2"
 
     monkeypatch.setattr("app.control_cli.shutil.which", lambda name: name)
     monkeypatch.setattr("app.control_cli._module_available", fake_module_available)
+    monkeypatch.setattr("app.control_cli._module_imports", lambda name: True)
     payload = build_doctor_payload(settings)
 
-    assert payload["ok"] is True
-    assert payload["checks"]["torch"]["available"] is False
-    assert payload["checks"]["torch"]["required"] is False
+    assert payload["ok"] is False
+    assert payload["checks"]["ctranslate2"]["available"] is False
+    assert payload["checks"]["ctranslate2"]["required"] is True
+
+
+def test_build_doctor_payload_requires_funasr_for_paraformer(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    monkeypatch.setattr(
+        "app.control_cli.inspect_ffmpeg",
+        lambda preferred, repo_root, tools_root: {
+            "available": True,
+            "resolved": "ffmpeg",
+            "source": "path",
+            "candidates": ["ffmpeg"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.control_cli.ensure_opencv_dependency",
+        lambda raise_on_failure=False: {
+            "ok": True,
+            "package": "opencv-python",
+            "installed": True,
+            "already_available": True,
+            "index_url": "https://mirrors.aliyun.com/pypi/simple/",
+        },
+    )
+
+    def fake_module_available(name: str) -> bool:
+        return name != "funasr"
+
+    monkeypatch.setattr("app.control_cli.shutil.which", lambda name: name)
+    monkeypatch.setattr("app.control_cli._module_available", fake_module_available)
+    monkeypatch.setattr("app.control_cli._module_imports", lambda name: True)
+    payload = build_doctor_payload(settings)
+
+    assert payload["ok"] is False
+    assert payload["checks"]["funasr"]["available"] is False
+    assert payload["checks"]["funasr"]["required"] is True
+
+
+def test_build_doctor_payload_requires_importable_torchaudio(tmp_path, monkeypatch):
+    settings = _build_settings(tmp_path)
+    monkeypatch.setattr(
+        "app.control_cli.inspect_ffmpeg",
+        lambda preferred, repo_root, tools_root: {
+            "available": True,
+            "resolved": "ffmpeg",
+            "source": "path",
+            "candidates": ["ffmpeg"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.control_cli.ensure_opencv_dependency",
+        lambda raise_on_failure=False: {
+            "ok": True,
+            "package": "opencv-python",
+            "installed": True,
+            "already_available": True,
+            "index_url": "https://mirrors.aliyun.com/pypi/simple/",
+        },
+    )
+    monkeypatch.setattr("app.control_cli.shutil.which", lambda name: name)
+    monkeypatch.setattr("app.control_cli._module_available", lambda name: True)
+    monkeypatch.setattr("app.control_cli._module_imports", lambda name: name != "torchaudio")
+    payload = build_doctor_payload(settings)
+
+    assert payload["ok"] is False
+    assert payload["checks"]["torchaudio"]["available"] is False
+    assert payload["checks"]["torchaudio"]["required"] is True
 
 
 def test_quickread_parser_accepts_legacy_sessdata_flags():

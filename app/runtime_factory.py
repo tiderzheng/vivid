@@ -27,10 +27,13 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
     if not bili_cookie and sessdata:
         bili_cookie = f"SESSDATA={sessdata}"
 
+    data_dir = _coerce_path(values.get("data_dir")) or settings.data_dir
+    whisper_root = _coerce_path(values.get("whisper_root")) or settings.whisper_root or data_dir / "models"
+
     return RuntimeOptions(
         source=_require_text(values, "source"),
         project_name=_text_or_none(values.get("project_name")),
-        data_dir=_coerce_path(values.get("data_dir")) or settings.data_dir,
+        data_dir=data_dir,
         output_format=_text_or_none(values.get("output_format")) or settings.default_format,
         whisper_model=_text_or_none(values.get("whisper_model")) or settings.default_model,
         forced_platform=_text_or_none(values.get("forced_platform")),
@@ -39,7 +42,7 @@ def build_runtime_options(settings: Settings, values: Mapping[str, Any]) -> Runt
             repo_root=settings.repo_root,
             tools_root=settings.tools_root,
         ),
-        whisper_root=_coerce_path(values.get("whisper_root")) or settings.whisper_root,
+        whisper_root=whisper_root,
         ears4_api=(_text_or_none(values.get("ears4_api")) or settings.ears4_api).rstrip("/"),
         eyes_api=(_text_or_none(values.get("eyes_api")) or settings.eyes_api).rstrip("/"),
         language=_text_or_none(values.get("language")) or settings.language,

@@ -8,7 +8,7 @@ from pathlib import Path
 class TranscriptionPreset:
     id: str
     name: str
-    model: str = "large"
+    model: str = "large-v3-turbo"
     device: str = "auto"
     language: str | None = "zh"
     task: str = "transcribe"
@@ -18,7 +18,7 @@ class TranscriptionPreset:
 
 @dataclass(slots=True)
 class TranscriptionRequestConfig:
-    model: str = "large"
+    model: str = "large-v3-turbo"
     device: str = "auto"
     language: str | None = "zh"
     task: str = "transcribe"

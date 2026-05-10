@@ -4,7 +4,9 @@ import argparse
 import json
 from pathlib import Path
 
+from ..constants import DEFAULT_MODEL
 from ..subsystems.transcription import TranscriptionPreset, load_transcription_store
+from ..subsystems.transcription.catalog import TRANSCRIPTION_MODELS
 from ..subsystems.transcription.store import save_transcription_store
 
 
@@ -21,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     upsert_parser = subparsers.add_parser("upsert-preset")
     upsert_parser.add_argument("--id", required=True)
     upsert_parser.add_argument("--name", required=True)
-    upsert_parser.add_argument("--model", default="base")
+    upsert_parser.add_argument("--model", choices=TRANSCRIPTION_MODELS, default=DEFAULT_MODEL)
     upsert_parser.add_argument("--device", default="auto")
     upsert_parser.add_argument("--language", default="zh")
     upsert_parser.add_argument("--task", default="transcribe")

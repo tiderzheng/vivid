@@ -54,14 +54,13 @@ function Show-TorchInstallChoiceAndExit {
 
     Write-Host ""
     Write-Host "Detected an NVIDIA GPU." -ForegroundColor Yellow
-    Write-Host "The default 'pip install -r requirements.txt' path often installs CPU-only torch," -ForegroundColor Yellow
-    Write-Host "which makes Whisper run on CPU instead of CUDA." -ForegroundColor Yellow
+    Write-Host "Install CUDA-matched torch and torchaudio before installing requirements." -ForegroundColor Yellow
     Write-Host ""
     Write-Host "Choose one path and rerun:" -ForegroundColor Cyan
     Write-Host "  CPU path  :" -NoNewline -ForegroundColor Cyan
     Write-Host " `$env:VIVID_TORCH_MODE='cpu'" -ForegroundColor White
     Write-Host "  CUDA path :" -ForegroundColor Cyan
-    Write-Host "    1. `"$PythonPath`" -m pip install torch --index-url https://download.pytorch.org/whl/cu128" -ForegroundColor White
+    Write-Host "    1. `"$PythonPath`" -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128" -ForegroundColor White
     Write-Host "    2. `"$PythonPath`" -m pip install -r `"$RequirementsPath`"" -ForegroundColor White
     Write-Host ""
     Write-Error "Stopped before installing dependencies so you can choose CPU or CUDA torch intentionally."

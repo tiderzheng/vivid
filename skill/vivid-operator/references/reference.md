@@ -9,7 +9,7 @@
 | Action | `-Action` | `-Action` | `doctor / quickread / paths / web-ui / bili-auth-qrcode / bili-auth-poll / bili-auth-status / bili-auth-logout` |
 | Source | `-Source` | `-Source` | 视频链接或本地媒体路径 |
 | VividRoot | `-VividRoot` | `--vivid-root` | Vivid 仓库路径 |
-| Model | `-Model` | `-Model` | Whisper 模型：`tiny/base/small/medium/large` |
+| Model | `-Model` | `-Model` | 转写模型：`tiny/base/small/medium/large-v3-turbo/large/paraformer-zh` |
 | DataDir | `-DataDir` | `-DataDir` | 输出根目录 |
 | ProjectName | `-ProjectName` | `-ProjectName` | 项目名 |
 | Format | `-Format` | `-Format` | `transcript / summary / both` |
@@ -20,7 +20,7 @@
 | TranscriptionBackend | `-TranscriptionBackend` | `--transcription-backend` | `auto / internal / ears4_api` |
 | VisionBackend | `-VisionBackend` | `--vision-backend` | `auto / internal / eyes_api` |
 | FfmpegBin | `-FfmpegBin` | `--ffmpeg-bin` | 覆盖 ffmpeg 路径 |
-| WhisperRoot | `-WhisperRoot` | `--whisper-root` | 覆盖 whisper 根路径 |
+| WhisperRoot | `-WhisperRoot` | `--whisper-root` | 覆盖 faster-whisper 模型缓存目录 |
 | TranscribeTimeout | `-TranscribeTimeout` | `--transcribe-timeout` | 转录超时（秒） |
 | OcrTimeout | `-OcrTimeout` | `--ocr-timeout` | OCR 超时（秒） |
 | NoKeepFiles | `-NoKeepFiles` | `--no-keep-files` | 执行后清理中间文件 |

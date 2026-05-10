@@ -1,5 +1,5 @@
 DEFAULT_FORMAT = "both"
-DEFAULT_MODEL = "large"
+DEFAULT_MODEL = "large-v3-turbo"
 DEFAULT_EARS4_API = "http://127.0.0.1:7860"
 DEFAULT_EYES_API = "http://127.0.0.1:9531"
 DEFAULT_SILICONFLOW_BASE = "https://api.siliconflow.cn/v1/chat/completions"

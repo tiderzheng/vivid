@@ -79,6 +79,11 @@ def load_settings() -> Settings:
     repo_root = Path(__file__).resolve().parents[1]
     tools_root = repo_root.parent
     data_dir = Path(os.environ.get("VIVID_DATA_DIR", "data")).expanduser()
+    whisper_root = (
+        Path(os.environ["VIVID_WHISPER_ROOT"]).expanduser()
+        if os.environ.get("VIVID_WHISPER_ROOT")
+        else data_dir / "models"
+    )
     persisted_bili_cookie = load_bili_cookie(repo_root)
     return Settings(
         repo_root=repo_root,
@@ -89,9 +94,7 @@ def load_settings() -> Settings:
             repo_root=repo_root,
             tools_root=tools_root,
         ),
-        whisper_root=Path(os.environ["VIVID_WHISPER_ROOT"]).expanduser()
-        if os.environ.get("VIVID_WHISPER_ROOT")
-        else None,
+        whisper_root=whisper_root,
         ears4_api=os.environ.get("EARS4_API", DEFAULT_EARS4_API).rstrip("/"),
         eyes_api=os.environ.get("EYES_API", DEFAULT_EYES_API).rstrip("/"),
         default_format=os.environ.get("VIVID_DEFAULT_FORMAT", DEFAULT_FORMAT),

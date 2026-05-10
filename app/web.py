@@ -46,18 +46,11 @@ from .services.run_state import (
 )
 from .subsystems.summary.store import load_summary_provider_store
 from .subsystems.summary.resolver import build_summary_provider_configs
+from .subsystems.transcription.catalog import TRANSCRIPTION_MODEL_INFO, TRANSCRIPTION_MODELS
 from .subsystems.transcription.store import load_transcription_store
 from .subsystems.vision.resolver import build_vision_request_config
 from .subsystems.vision.store import load_vision_store
 
-WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
-WHISPER_MODEL_INFO = {
-    "tiny": {"size": "~39 MB", "speed": "最快", "accuracy": "较低", "best_for": "快速测试"},
-    "base": {"size": "~74 MB", "speed": "快", "accuracy": "一般", "best_for": "日常使用"},
-    "small": {"size": "~244 MB", "speed": "中等", "accuracy": "较好", "best_for": "平衡选择"},
-    "medium": {"size": "~769 MB", "speed": "较慢", "accuracy": "好", "best_for": "高质量需求"},
-    "large": {"size": "~1.5 GB", "speed": "最慢", "accuracy": "最好", "best_for": "专业场景"},
-}
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled"}
 SENSITIVE_JOB_KEYS = {
     "bili_cookie",
@@ -1306,8 +1299,8 @@ def _options_payload(settings: Settings) -> dict[str, Any]:
     vision_store = load_vision_store(settings.vision_api_configs_path, settings.vision_prompts_path)
     transcription_store = load_transcription_store(settings.transcription_presets_path)
     return {
-        "whisper_models": WHISPER_MODELS,
-        "whisper_model_info": WHISPER_MODEL_INFO,
+        "whisper_models": TRANSCRIPTION_MODELS,
+        "whisper_model_info": TRANSCRIPTION_MODEL_INFO,
         "platforms": ["", "local", "douyin", "bilibili", "youtube", "generic"],
         "output_formats": ["transcript", "summary", "both"],
         "acquisition_modes": ["auto", "smart", "prefer_ocr", "force_ocr"],

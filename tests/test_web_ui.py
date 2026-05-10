@@ -31,7 +31,7 @@ def _build_settings(tmp_path: Path) -> Settings:
         ears4_api="http://127.0.0.1:7860",
         eyes_api="http://127.0.0.1:9531",
         default_format="both",
-        default_model="base",
+        default_model="large-v3-turbo",
         language="zh",
         transcription_preset_id=None,
         acquisition_mode="auto",
@@ -141,7 +141,9 @@ def test_web_bootstrap_returns_options(tmp_path, monkeypatch):
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["defaults"]["whisper_model"] == "base"
+    assert payload["defaults"]["whisper_model"] == "large-v3-turbo"
+    assert "large-v3-turbo" in payload["options"]["whisper_models"]
+    assert "paraformer-zh" in payload["options"]["whisper_models"]
     assert payload["options"]["vision_api_configs"]["selected_id"] == "cfg-1"
     assert payload["options"]["transcription_presets"]["selected_id"] == "preset-1"
     assert payload["dependencies"]["opencv"]["package"] == "opencv-python"

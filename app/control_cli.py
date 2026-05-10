@@ -25,6 +25,7 @@ from .services.cloud_bridge import CloudQuickreadError, run_cloud_quickread
 from .services.dependency_bootstrap import ensure_opencv_dependency
 from .services.ffmpeg_locator import inspect_ffmpeg
 from .subsystems.transcription import TranscriptionPreset, load_transcription_store
+from .subsystems.transcription.catalog import TRANSCRIPTION_MODELS
 from .subsystems.transcription.store import save_transcription_store
 from .subsystems.vision import VisionApiConfig, VisionPromptItem, load_vision_store
 from .subsystems.vision.store import save_vision_store
@@ -53,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
     quickread.add_argument("-Format", "--format", default="both", choices=["transcript", "summary", "both"])
     quickread.add_argument("-DataDir", "--data-dir")
     quickread.add_argument("-Platform", "--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
-    quickread.add_argument("-Model", "--model", choices=["tiny", "base", "small", "medium", "large"])
+    quickread.add_argument("-Model", "--model", choices=TRANSCRIPTION_MODELS)
     quickread.add_argument("-ExecutionMode", "--execution-mode", choices=["local", "cloud"], default="local")
     quickread.add_argument(
         "-ArtifactTarget",
@@ -118,7 +119,7 @@ def build_parser() -> argparse.ArgumentParser:
     transcription_upsert = subparsers.add_parser("transcription-upsert-preset")
     transcription_upsert.add_argument("-Id", "--id", required=True)
     transcription_upsert.add_argument("-Name", "--name", required=True)
-    transcription_upsert.add_argument("-Model", "--model", default="base")
+    transcription_upsert.add_argument("-Model", "--model", choices=TRANSCRIPTION_MODELS, default="large-v3-turbo")
     transcription_upsert.add_argument("-Device", "--device", default="auto")
     transcription_upsert.add_argument("-Language", "--language", default="zh")
     transcription_upsert.add_argument("-Task", "--task", default="transcribe")
@@ -274,17 +275,41 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
             "required": False,
             "install_hint": "Run pip install yt-dlp if you need generic site downloads",
         },
-        "whisper": {
-            "available": _module_available("whisper"),
-            "name": "openai-whisper",
+        "faster_whisper": {
+            "available": _module_available("faster_whisper"),
+            "name": "faster-whisper",
             "required": True,
             "install_hint": "Run pip install -r requirements.txt",
         },
+        "ctranslate2": {
+            "available": _module_available("ctranslate2"),
+            "name": "ctranslate2",
+            "required": True,
+            "install_hint": "Installed by faster-whisper; required for internal transcription runtime",
+        },
+        "funasr": {
+            "available": _module_available("funasr"),
+            "name": "funasr",
+            "required": True,
+            "install_hint": "Run pip install -r requirements.txt to use paraformer-zh",
+        },
+        "modelscope": {
+            "available": _module_available("modelscope"),
+            "name": "modelscope",
+            "required": True,
+            "install_hint": "Installed by funasr; required to download paraformer-zh models",
+        },
         "torch": {
-            "available": _module_available("torch"),
+            "available": _module_imports("torch"),
             "name": "torch",
-            "required": False,
-            "install_hint": "Only required for internal Whisper transcription; external API transcription can run without it",
+            "required": True,
+            "install_hint": "Required by funasr/paraformer-zh; install a torch build compatible with torchaudio",
+        },
+        "torchaudio": {
+            "available": _module_imports("torchaudio"),
+            "name": "torchaudio",
+            "required": True,
+            "install_hint": "Required by funasr/paraformer-zh; install a torchaudio build matching torch",
         },
         "opencv": {
             "available": bool(opencv_info.get("ok")),
@@ -353,7 +378,12 @@ def build_doctor_payload(settings: Settings) -> dict[str, Any]:
             checks["python"]["available"],
             checks["ffmpeg"]["available"],
             checks["requests"]["available"],
-            checks["whisper"]["available"],
+            checks["faster_whisper"]["available"],
+            checks["ctranslate2"]["available"],
+            checks["funasr"]["available"],
+            checks["modelscope"]["available"],
+            checks["torch"]["available"],
+            checks["torchaudio"]["available"],
             checks["bili_helper"]["exists"],
             checks["douyin_helper"]["exists"],
         ]
@@ -610,6 +640,14 @@ def _persist_bili_cookie_if_present(repo_root: Path, bili_cookie: str | None, *,
 
 def _module_available(name: str) -> bool:
     return importlib.util.find_spec(name) is not None
+
+
+def _module_imports(name: str) -> bool:
+    try:
+        __import__(name)
+    except Exception:
+        return False
+    return True
 
 
 if __name__ == "__main__":

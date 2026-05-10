@@ -3,22 +3,32 @@
     {
       "id": "default",
       "name": "默认转录",
-      "model": "large",
+      "model": "large-v3-turbo",
       "device": "auto",
       "language": "zh",
       "task": "transcribe",
       "extract_audio": true,
-      "note": "Default Vivid transcription preset"
+      "note": "Default faster-whisper transcription preset"
     },
     {
       "id": "fast-zh",
       "name": "快速中文",
-      "model": "small",
+      "model": "paraformer-zh",
       "device": "auto",
       "language": "zh",
       "task": "transcribe",
       "extract_audio": true,
-      "note": "Faster Chinese transcription preset"
+      "note": "Fast Chinese transcription with FunASR Paraformer"
+    },
+    {
+      "id": "whisper-turbo",
+      "name": "Whisper Turbo",
+      "model": "large-v3-turbo",
+      "device": "auto",
+      "language": "zh",
+      "task": "transcribe",
+      "extract_audio": true,
+      "note": "Whisper large-v3-turbo transcription preset"
     }
   ],
   "selected_id": "default"

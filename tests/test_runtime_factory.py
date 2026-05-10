@@ -15,7 +15,7 @@ def _build_settings(tmp_path: Path) -> Settings:
         ears4_api="http://127.0.0.1:7860",
         eyes_api="http://127.0.0.1:9531",
         default_format="both",
-        default_model="base",
+        default_model="large-v3-turbo",
         language="zh",
         transcription_preset_id=None,
         acquisition_mode="auto",
@@ -56,6 +56,7 @@ def _build_settings(tmp_path: Path) -> Settings:
 
 
 def test_load_settings_reads_bili_cookie_and_sessdata_env(monkeypatch):
+    monkeypatch.delenv("VIVID_WHISPER_ROOT", raising=False)
     monkeypatch.setenv("VIVID_BILI_COOKIE", "cookie-from-env")
     monkeypatch.setenv("BILI_SESSDATA", "sessdata-from-env")
 
@@ -63,6 +64,16 @@ def test_load_settings_reads_bili_cookie_and_sessdata_env(monkeypatch):
 
     assert settings.bili_cookie == "cookie-from-env"
     assert settings.sessdata == "sessdata-from-env"
+    assert settings.whisper_root == settings.data_dir / "models"
+
+
+def test_load_settings_respects_explicit_whisper_root(monkeypatch, tmp_path):
+    custom_root = tmp_path / "custom-models"
+    monkeypatch.setenv("VIVID_WHISPER_ROOT", str(custom_root))
+
+    settings = load_settings()
+
+    assert settings.whisper_root == custom_root
 
 
 def test_load_settings_reads_persisted_bili_cookie_when_env_missing(monkeypatch, tmp_path):
@@ -127,6 +138,35 @@ def test_runtime_factory_maps_summary_openai_to_shared_llm_provider(tmp_path):
     assert options.siliconflow_base_url == "https://llm.example.com/v1/chat/completions"
     assert options.siliconflow_api_key == "sk-summary"
     assert options.siliconflow_model == "demo-summary-model"
+
+
+def test_runtime_factory_defaults_whisper_root_to_data_models(tmp_path):
+    settings = _build_settings(tmp_path)
+
+    options = build_runtime_options(
+        settings,
+        {
+            "source": "https://example.com/video",
+        },
+    )
+
+    assert options.whisper_root == settings.data_dir / "models"
+
+
+def test_runtime_factory_whisper_root_tracks_runtime_data_dir(tmp_path):
+    settings = _build_settings(tmp_path)
+    custom_data = tmp_path / "custom-data"
+
+    options = build_runtime_options(
+        settings,
+        {
+            "source": "https://example.com/video",
+            "data_dir": str(custom_data),
+        },
+    )
+
+    assert options.data_dir == custom_data
+    assert options.whisper_root == custom_data / "models"
 
 
 def test_runtime_factory_uses_env_bili_cookie_before_explicit_sessdata(tmp_path):

@@ -2,6 +2,7 @@ import json
 
 from app.models.runtime import RuntimeOptions
 from app.subsystems.transcription import build_transcription_request_config
+from app.subsystems.transcription.store import load_transcription_store
 
 
 def test_build_transcription_request_config(tmp_path):
@@ -78,3 +79,26 @@ def test_build_transcription_request_config(tmp_path):
     assert resolved.device == "cuda"
     assert resolved.task == "transcribe"
     assert resolved.extract_audio is True
+
+
+def test_transcription_store_defaults_missing_model_to_large_v3_turbo(tmp_path):
+    presets_path = tmp_path / "presets.json"
+    presets_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "default",
+                        "name": "default",
+                    }
+                ],
+                "selected_id": "default",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    store = load_transcription_store(presets_path)
+
+    assert store.get_preset("default").model == "large-v3-turbo"

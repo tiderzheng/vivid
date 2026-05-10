@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ...constants import DEFAULT_MODEL
 from .models import TranscriptionPreset
 
 
@@ -68,7 +69,7 @@ def load_transcription_store(presets_path: Path) -> TranscriptionConfigStore:
                 TranscriptionPreset(
                     id=str(item.get("id", "")).strip(),
                     name=str(item.get("name", "")).strip(),
-                    model=str(item.get("model", "base")).strip() or "base",
+                    model=str(item.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL,
                     device=str(item.get("device", "auto")).strip() or "auto",
                     language=(str(item.get("language", "")).strip() or None),
                     task=str(item.get("task", "transcribe")).strip() or "transcribe",

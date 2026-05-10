@@ -9,6 +9,7 @@ from .pipeline.orchestrator import run_quickread
 from .runtime_factory import build_runtime_options
 from .services.bili_cookie_store import save_bili_cookie
 from .services.dependency_bootstrap import ensure_opencv_dependency
+from .subsystems.transcription.catalog import TRANSCRIPTION_MODELS
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -25,15 +26,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-m",
         "--model",
-        choices=["tiny", "base", "small", "medium", "large"],
-        help="Whisper model for Ears4",
+        choices=TRANSCRIPTION_MODELS,
+        help="Transcription model",
     )
     parser.add_argument("--platform", choices=["bilibili", "douyin", "youtube", "generic", "local"])
     parser.add_argument("--sessdata", help=argparse.SUPPRESS)
     parser.add_argument("--no-sessdata", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--bili-cookie", help="Bilibili cookie for helper auth")
     parser.add_argument("--ffmpeg-bin", help="Override ffmpeg executable path")
-    parser.add_argument("--whisper-root", help="Override local whisper package root")
+    parser.add_argument("--whisper-root", help="Override local faster-whisper model cache root")
     parser.add_argument("--ears4-api", help="Override Ears4 base URL")
     parser.add_argument("--eyes-api", help="Override Eyes base URL")
     parser.add_argument("--language", help="Preferred transcription language")

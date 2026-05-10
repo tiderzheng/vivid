@@ -112,8 +112,9 @@
 默认主路径是：
 
 - **音频转录**
-  - 使用内部 `Whisper`
-  - 这条链路会用到 `torch`
+  - 使用内部转写引擎
+  - 默认模型为 `large-v3-turbo`
+  - 可切换 `paraformer-zh` 用于中文语音
 
 当需要 OCR 时，会走：
 
@@ -227,10 +228,10 @@ prompt 模板默认占位符：`{transcript}`
 2. 安装所有Python依赖
 3. 使用虚拟环境的Python运行
 
-如果脚本检测到 **NVIDIA GPU**，会先停止在 `torch` 安装前，让你明确选择：
+如果脚本检测到 **NVIDIA GPU**，会先停止在 `torch` / `torchaudio` 安装前，让你明确选择：
 
 - CPU 路径：设置 `VIVID_TORCH_MODE=cpu` 后重跑
-- CUDA 路径：先手动安装 CUDA 版 `torch`，再安装 `requirements.txt`
+- CUDA 路径：先手动安装 CUDA 版 `torch` 和 `torchaudio`，再安装 `requirements.txt`
 
 **Windows:**
 
@@ -267,15 +268,16 @@ pip install -r requirements.txt
 ### 依赖说明
 
 - `opencv` 缺失时，**瞬知** 会在进入 OCR 路径时自动尝试安装
-- `openai-whisper` 会间接拉起 `torch` 依赖；如果改用外部转录 API，可以不依赖本地 `torch`
-- 首次使用某个Whisper模型时，会自动下载模型文件
+- 内部音频转录默认使用 `faster-whisper` + `large-v3-turbo`
+- 可选中文转写模型 `paraformer-zh` 使用 `funasr` / `modelscope`
+- 首次使用某个 Whisper/faster-whisper 模型时，会自动下载模型文件
 
 如果你是 **NVIDIA GPU / CUDA** 环境，建议安装顺序改成：
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
-.\.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu128
+.\.venv\Scripts\python.exe -m pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
@@ -306,8 +308,10 @@ Linux/macOS:
 - `python`
 - `node`（Douyin下载需要）
 - `ffmpeg`
-- `whisper`（openai-whisper包）
-- `torch`（仅内部 Whisper 转录需要）
+- `faster-whisper`
+- `ctranslate2`（faster-whisper 运行时）
+- `funasr`（paraformer-zh 运行时）
+- `modelscope`（下载 paraformer-zh 模型）
 - `opencv`（仅 OCR 路径需要，会自动安装）
 - 内嵌下载器（`tools/bilibili/`、`tools/douyin/`）
 - 内部配置文件
@@ -440,7 +444,8 @@ OCR 默认也由 **瞬知** 自己配置。
 
 ### 转录
 
-默认优先使用 **瞬知** 内部 `Whisper`。
+默认优先使用 **瞬知** 内部 `faster-whisper`，默认模型为 `large-v3-turbo`。
+中文语音可在 Web UI 或 `-Model/--model` 中切换为 `paraformer-zh`。
 
 主要变量：
 
@@ -552,16 +557,10 @@ Bilibili 登录态可以通过 Web UI 的“扫码登录 Bilibili”面板维护
 它不是下载器，不是总结模型，也不是 Whisper。
 如果你只走默认音频转录路径，通常不需要手动关心它。
 
-### 为什么会出现 `torch`
+### 为什么会出现 `ctranslate2` / `funasr`
 
-因为内部 `Whisper` 转录依赖 `torch`。
-
-所以只要你使用：
-
-- **瞬知** 内部转录
-
-通常就会用到 `torch`。
-如果你改用外部转录 API，`torch` 就不是主路径必需项。
+因为内部 `faster-whisper` 转录依赖 `ctranslate2` 运行 Whisper 模型。
+如果切换到 `paraformer-zh`，会使用 `funasr` 和 `modelscope` 下载并运行中文 Paraformer 模型。
 
 ### 为什么会出现 `Node.js`
 
