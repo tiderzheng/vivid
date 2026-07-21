@@ -7,8 +7,20 @@ import sys
 from pathlib import Path
 
 from ..exceptions import VividError
-from ..services.media_store import newest_file
+from ..services.media_store import newest_file, read_text_file
 from ..utils.subprocess_utils import command_env, run_command
+from ..utils.text import clean_transcript
+
+_SUBTITLE_LANGUAGE_PRIORITY = (
+    "zh-cn",
+    "zh-hans",
+    "zh-hant",
+    "zh-tw",
+    "ai-zh",
+    "zh",
+    "en-us",
+    "en",
+)
 
 
 class BilibiliAdapter:
@@ -38,6 +50,8 @@ class BilibiliAdapter:
                 cwd=script_path.parent,
                 timeout=30,
                 env=_helper_env(bili_cookie=bili_cookie, sessdata=sessdata),
+                encoding="utf-8",
+                errors="replace",
             )
             if result.returncode == 0:
                 # 尝试解析JSON输出
@@ -92,6 +106,46 @@ class BilibiliAdapter:
             raise VividError("Bilibili helper completed but no media file was produced.")
         return media_path
 
+    def export_subtitles(
+        self,
+        source: str,
+        workdir: Path,
+        *,
+        bili_cookie: str | None = None,
+        sessdata: str | None = None,
+    ) -> str | None:
+        script_path = _resolve_script_path(self.script_path)
+        outdir = workdir / "artifacts" / "bilibili-subtitle"
+        outdir.mkdir(parents=True, exist_ok=True)
+        command = [
+            sys.executable,
+            str(script_path),
+            "download",
+            "--url",
+            source,
+            "--output",
+            str(outdir),
+            "--content",
+            "none",
+            "--episode",
+            "current",
+            "--subtitle-format",
+            "txt",
+            "--subtitle-lang",
+            "all",
+        ]
+        run_command(
+            command,
+            cwd=script_path.parent,
+            retries=2,
+            env=_helper_env(bili_cookie=bili_cookie, sessdata=sessdata),
+        )
+        subtitle_path = _preferred_subtitle_file(outdir)
+        if subtitle_path is None:
+            return None
+        text = clean_transcript(read_text_file(subtitle_path))
+        return text or None
+
 
 def _resolve_script_path(script_path: Path | None) -> Path:
     candidate = (script_path or _default_script_path()).expanduser().resolve()
@@ -131,6 +185,23 @@ def _credential_or_none(value: str | None) -> str | None:
         return None
     text = value.strip()
     return text or None
+
+
+def _preferred_subtitle_file(outdir: Path) -> Path | None:
+    candidates = [path for path in outdir.glob("*.txt") if path.is_file()]
+    if not candidates:
+        return None
+
+    def sort_key(path: Path) -> tuple[int, float, str]:
+        stem = path.stem.casefold()
+        language_rank = len(_SUBTITLE_LANGUAGE_PRIORITY)
+        for index, language in enumerate(_SUBTITLE_LANGUAGE_PRIORITY):
+            if stem.endswith(f"_{language}"):
+                language_rank = index
+                break
+        return language_rank, -path.stat().st_mtime, path.name.casefold()
+
+    return min(candidates, key=sort_key)
 
 
 def _extract_title_from_probe_payload(data: dict) -> str | None:

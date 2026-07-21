@@ -245,7 +245,32 @@ def test_acquire_transcript_smart_prefers_transcription_when_no_hard_subtitles(t
     assert result.acquisition_method == "Internal Whisper base"
 
 
-def test_acquire_transcript_smart_downloads_media_for_bilibili(tmp_path, monkeypatch):
+def test_acquire_transcript_smart_prefers_bilibili_official_subtitle(tmp_path, monkeypatch):
+    workdir = tmp_path / "work"
+    options = _build_options(tmp_path, backend="auto", acquisition_mode="smart")
+    options.source = "https://www.bilibili.com/video/BV1xx"
+
+    class FakeBilibiliAdapter:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def export_subtitles(self, *_args, **_kwargs):
+            return "官方字幕"
+
+    monkeypatch.setattr("app.pipeline.acquisition.BilibiliAdapter", FakeBilibiliAdapter)
+    monkeypatch.setattr(
+        "app.pipeline.acquisition.create_media_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not download media")),
+    )
+
+    result = acquire_transcript(options, "bilibili", workdir)
+
+    assert result.text == "官方字幕"
+    assert result.acquisition_method == "Bilibili official subtitle"
+    assert result.media_path is None
+
+
+def test_acquire_transcript_smart_downloads_media_when_bilibili_subtitle_is_unavailable(tmp_path, monkeypatch):
     media_path = tmp_path / "input.mp4"
     media_path.write_text("x", encoding="utf-8")
     workdir = tmp_path / "work"
@@ -260,7 +285,7 @@ def test_acquire_transcript_smart_downloads_media_for_bilibili(tmp_path, monkeyp
             pass
 
         def export_subtitles(self, *_args, **_kwargs):
-            raise AssertionError("should not try Bilibili subtitles before downloading media")
+            return None
 
     monkeypatch.setattr("app.pipeline.acquisition.BilibiliAdapter", FakeBilibiliAdapter)
     monkeypatch.setattr(

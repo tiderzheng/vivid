@@ -108,7 +108,7 @@
 
 ### Bilibili 规则
 
-- `Bilibili` 仍然按“直接下载媒体 -> Whisper / OCR”处理，不恢复官方字幕优先
+- `Bilibili` 在 `auto` / `smart` 模式下优先提取官方字幕；无字幕或提取失败时回退到“下载媒体 -> Whisper / OCR”
 - helper 会先尝试完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名请求画像
 - 支持先走二维码登录维护项目本地登录态：`bili-auth-qrcode`、`bili-auth-poll`、`bili-auth-status`、`bili-auth-logout`
 - 匿名请求画像包括 `_uuid`、`b_lsid`、`b_nut`、`buvid3`、`buvid4`、`buvid_fp`，由 helper 按 `Bili23` 规则维护；即使完整 `Cookie` 里带了这些旧值，helper 也会刷新覆盖

@@ -61,7 +61,7 @@
 - 本地视频路径
 - 本地音频路径
 
-`Bilibili` 现在按直接下载媒体处理，不恢复官方字幕优先。helper 会优先使用完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名指纹 `Cookie`。
+`Bilibili` 在 `auto` / `smart` 模式下优先获取官方字幕；无字幕或字幕接口失败时，再下载媒体并进入 Whisper / OCR。helper 会优先使用完整 `Cookie`，其次兼容 `SESSDATA`，没有凭据时自动补匿名指纹 `Cookie`。
 
 支持常见 `Bilibili` 链接形态：`BV`、`av`、`ep`、`ss`、`md`。
 

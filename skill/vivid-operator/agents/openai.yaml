@@ -56,7 +56,7 @@ default_prompt: |
   Do not dump raw JSON and do not ask broad open-ended troubleshooting questions.
 
   Bilibili rule:
-  - Bilibili still follows the direct media download flow, not official-subtitle priority
+  - in auto/smart mode, Bilibili tries official subtitles first and falls back to media download plus Whisper/OCR
   - start with the anonymous/helper flow first; it can auto-fill anonymous request identity fields including _uuid, b_lsid, b_nut, buvid3, buvid4, and buvid_fp
   - the helper owns those anonymous identity fields in the Bili23 style; stale values from a full cookie may be refreshed instead of preserved
   - the helper writes base login cookies first, then refreshes anonymous identity fields

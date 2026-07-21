@@ -58,6 +58,43 @@ def acquire_transcript(
     checkpoint_callback: CheckpointCallback | None = None,
     resume_media_path: Path | None = None,
 ) -> TranscriptResult:
+    if (
+        platform == "bilibili"
+        and options.acquisition_mode in {"auto", "smart"}
+        and resume_media_path is None
+    ):
+        try:
+            _emit_event(event_callback, "subtitle", "尝试提取 Bilibili 官方字幕")
+            subtitle_text = BilibiliAdapter(options.bili_script).export_subtitles(
+                options.source,
+                workdir,
+                bili_cookie=options.bili_cookie,
+                sessdata=options.sessdata,
+            )
+            if subtitle_text:
+                _emit_event(event_callback, "subtitle_completed", "已获取 Bilibili 官方字幕")
+                result = TranscriptResult(
+                    text=subtitle_text,
+                    acquisition_method="Bilibili official subtitle",
+                )
+                _emit_checkpoint(
+                    checkpoint_callback,
+                    {
+                        "last_completed_stage": "transcription",
+                        "transcript": _transcript_payload(result),
+                    },
+                )
+                return result
+            _emit_event(event_callback, "subtitle_unavailable", "未找到可用的 Bilibili 官方字幕")
+        except Exception as exc:
+            _emit_event(
+                event_callback,
+                "subtitle_failed",
+                "Bilibili 字幕提取失败，改走媒体流程",
+                {"error": str(exc)},
+            )
+            log_exception("bilibili_subtitle_failed", exc, source=options.source)
+
     if resume_media_path is not None:
         media_path = resume_media_path.expanduser()
         if not media_path.exists():

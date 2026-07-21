@@ -328,20 +328,29 @@ class C:
         h={'User-Agent':UA,'Referer':RF}; h.update(kw.pop('headers',{}) or {})
         x=self.s.request(m,u,headers=h,timeout=20,**kw); x.raise_for_status(); return x
     def j(self,u,p=None,h=None,sig=False,path=None):
-        p=p or {}
-        if sig:p=self.sign(dict(p))
-        d=self.r('GET',u,params=p,headers=h).json()
+        p=dict(p or {})
+        request_params=self.sign(p) if sig else p
+        try:
+            d=self.r('GET',u,params=request_params,headers=h).json()
+        except requests.HTTPError as ex:
+            if not sig or request_params==p or ex.response is None or ex.response.status_code not in (412,):raise
+            d=self.r('GET',u,params=p,headers=h).json()
         if d.get('code',0)!=0: raise E(f"api error {d.get('code')}: {d.get('message') or d.get('msg')}")
         n=d
         for k in (path or []): n=n[k]
         return n
     def sign(self,p):
         if not self.k:
-            nav=self.j('https://api.bilibili.com/x/web-interface/nav').get('data',{})
+            try:
+                nav_data=self.r('GET','https://api.bilibili.com/x/web-interface/nav').json()
+            except Exception:
+                return p
+            if nav_data.get('code',0)!=0:return p
+            nav=nav_data.get('data',{})
             w=nav.get('wbi_img',{})
             a=w.get('img_url','').rsplit('/',1)[-1].split('.')[0]
             b=w.get('sub_url','').rsplit('/',1)[-1].split('.')[0]
-            if not a or not b: raise E('cannot get wbi key')
+            if not a or not b:return p
             self.k=(a,b)
         s=self.k[0]+self.k[1]
         m=''.join(s[i] for i in MIX)[:32]
@@ -382,7 +391,9 @@ def parse_ctx(c:C,url:str):
     q=urllib.parse.parse_qs(urllib.parse.urlparse(nu).query); p=1
     try:p=max(1,int((q.get('p') or ['1'])[0]))
     except:pass
-    d=c.j('https://api.bilibili.com/x/web-interface/wbi/view',{'bvid':bv.group(1)} if bv else {'aid':int(av.group(1))},sig=True,path=['data'])
+    # The CLI immediately requests playurl after parsing. Keeping the metadata
+    # lookup unsigned avoids Bilibili's rapid consecutive WBI request limit.
+    d=c.j('https://api.bilibili.com/x/web-interface/view',{'bvid':bv.group(1)} if bv else {'aid':int(av.group(1))},path=['data'])
     pages=d.get('pages') or []
     if not pages: raise E('no pages from video url')
     eps=[]
@@ -395,7 +406,12 @@ def parse_ctx(c:C,url:str):
 
 def play(c:C,e:dict,qn:int):
     if e['type']=='video':
-        return c.j('https://api.bilibili.com/x/player/wbi/playurl',{'bvid':e['bvid'],'cid':e['cid'],'qn':qn,'fnver':0,'fnval':4048,'fourk':1},h={'Referer':e['ref']},sig=True,path=['data'])
+        params={'bvid':e['bvid'],'cid':e['cid'],'qn':qn,'fnver':0,'fnval':4048,'fourk':1}
+        try:
+            return c.j('https://api.bilibili.com/x/player/wbi/playurl',params,h={'Referer':e['ref']},sig=True,path=['data'])
+        except requests.HTTPError as ex:
+            if ex.response is None or ex.response.status_code!=412:raise
+            return c.j('https://api.bilibili.com/x/player/playurl',params,h={'Referer':e['ref']},path=['data'])
     return c.j('https://api.bilibili.com/pgc/player/web/playurl',{'bvid':e['bvid'],'cid':e['cid'],'qn':qn,'fnver':0,'fnval':12240,'fourk':1},h={'Referer':e['ref']},path=['result'])
 
 def stype(d):
@@ -459,17 +475,32 @@ def _classify_candidate_urls(c:C,ul:list[str],ref:str)->tuple[list[str],list[str
         try:
             h=c.r('HEAD',u,headers={'Referer':ref}).headers
         except Exception:
-            unknown.append(u)
+            size=_probe_with_range(c,u,ref)
+            (valid if size>10240 else unknown).append(u)
             continue
         ct=str(h.get('Content-Type') or h.get('content-type') or '').lower()
-        cl=str(h.get('Content-Length') or h.get('content-length') or '')
-        if not ct or 'text' in ct:
+        if 'text' in ct or 'json' in ct:
             continue
-        if not cl.isdigit() or int(cl)<=10240:
-            unknown.append(u)
-            continue
-        valid.append(u)
+        size=_response_file_size(h)
+        if size<=10240:size=_probe_with_range(c,u,ref)
+        (valid if size>10240 else unknown).append(u)
     return valid,unknown
+
+def _probe_with_range(c:C,u:str,ref:str)->int:
+    try:
+        with c.r('GET',u,headers={'Referer':ref,'Range':'bytes=0-0'},stream=True) as r:
+            return _response_file_size(r.headers)
+    except Exception:
+        return 0
+
+def _response_file_size(headers)->int:
+    ct=str(headers.get('Content-Type') or headers.get('content-type') or '').lower()
+    if not ct or 'text' in ct or 'json' in ct:return 0
+    cr=str(headers.get('Content-Range') or headers.get('content-range') or '')
+    total=cr.rpartition('/')[2].strip()
+    if total.isdigit():return int(total)
+    cl=str(headers.get('Content-Length') or headers.get('content-length') or '')
+    return int(cl) if cl.isdigit() else 0
 
 def _valid_urls(c:C,ul:list[str],ref:str)->list[str]:
     valid,_unknown=_classify_candidate_urls(c,ul,ref)
@@ -505,7 +536,11 @@ def to_lrc(d):
 def sub(c:C,e:dict,out:Path,bn:str,fmtx:str,lan:str):
     if fmtx=='none':return
     p={'bvid':e['bvid'],'cid':e['cid'],'dm_img_list':'[]','dm_img_str':'V2ViR0wgMS4wIChPcGVuR0wgRVMgMi4wIENocm9taXVtKQ','dm_cover_img_str':'QU5HTEUgKE5WSURJQSwgTlZJRElBIEdlRm9yY2UgUlRYIDQwNjAgTGFwdG9wIEdQVSAoMHgwMDAwMjhFMCkgRGlyZWN0M0QxMSB2c181XzAgcHNfNV8wLCBEM0QxMSlHb29nbGUgSW5jLiAoTlZJRElBKQ','dm_img_inter':'{"ds":[],"wh":[5231,6067,75],"of":[475,950,475]}'}
-    d=c.j('https://api.bilibili.com/x/player/wbi/v2',p,h={'Referer':e['ref']},sig=True,path=['data'])
+    try:
+        d=c.j('https://api.bilibili.com/x/player/wbi/v2',p,h={'Referer':e['ref']},sig=True,path=['data'])
+    except requests.HTTPError as ex:
+        if ex.response is None or ex.response.status_code!=412:raise
+        d=c.j('https://api.bilibili.com/x/player/v2',{'bvid':e['bvid'],'cid':e['cid']},h={'Referer':e['ref']},path=['data'])
     ls=d.get('subtitle',{}).get('subtitles',[])
     if not ls: print('[info] no subtitle'); return
     allx=lan.lower()=='all'; allow={x.strip() for x in lan.split(',') if x.strip()}

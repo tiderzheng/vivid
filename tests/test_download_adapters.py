@@ -85,6 +85,8 @@ def test_bilibili_adapter_reads_title_from_probe_episodes_without_helper_cli_fla
     def fake_run(command, *args, **kwargs):
         captured["command"] = command
         captured["env"] = kwargs.get("env")
+        captured["encoding"] = kwargs.get("encoding")
+        captured["errors"] = kwargs.get("errors")
         return DummyResult()
 
     monkeypatch.setattr("app.adapters.bilibili.subprocess.run", fake_run)
@@ -101,6 +103,36 @@ def test_bilibili_adapter_reads_title_from_probe_episodes_without_helper_cli_fla
     assert captured["env"] is not None
     assert captured["env"]["VIVID_BILI_COOKIE"] == "SESSDATA=fresh-cookie; buvid3=abc"
     assert captured["env"]["BILI_SESSDATA"] == "legacy-cookie"
+    assert captured["encoding"] == "utf-8"
+    assert captured["errors"] == "replace"
+
+
+def test_bilibili_adapter_exports_preferred_official_subtitle(tmp_path, monkeypatch):
+    helper = tmp_path / "bili.py"
+    helper.write_text("# helper", encoding="utf-8")
+    captured = {}
+
+    def fake_run(command, cwd=None, retries=1, env=None):
+        captured["command"] = command
+        captured["env"] = env
+        outdir = tmp_path / "artifacts" / "bilibili-subtitle"
+        outdir.mkdir(parents=True, exist_ok=True)
+        (outdir / "demo_ai-zh.txt").write_text("AI 字幕", encoding="utf-8")
+        (outdir / "demo_zh-CN.txt").write_text("人工字幕\n", encoding="utf-8")
+
+    monkeypatch.setattr("app.adapters.bilibili.run_command", fake_run)
+
+    result = BilibiliAdapter(helper).export_subtitles(
+        "https://www.bilibili.com/video/BV1x",
+        tmp_path,
+        bili_cookie="SESSDATA=fresh-cookie",
+    )
+
+    assert result == "人工字幕"
+    assert "--content" in captured["command"]
+    assert captured["command"][captured["command"].index("--content") + 1] == "none"
+    assert captured["command"][captured["command"].index("--subtitle-format") + 1] == "txt"
+    assert captured["env"]["VIVID_BILI_COOKIE"] == "SESSDATA=fresh-cookie"
 
 
 def test_bilibili_helper_prefers_full_cookie_and_fills_missing_fields(monkeypatch):
@@ -270,6 +302,120 @@ def test_bilibili_helper_fetches_ticket_and_activates_buvid(monkeypatch):
     assert activated["buvid_fp"]
 
 
+def test_bilibili_helper_retries_signed_request_without_wbi_on_http_412():
+    helper = _load_bilibili_helper()
+    client = object.__new__(helper.C)
+    client.k = ("img", "sub")
+    calls = []
+
+    class DummyResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def json(self):
+            return self.payload
+
+    def fake_request(_method, _url, params=None, headers=None):
+        calls.append(dict(params or {}))
+        if "w_rid" in (params or {}):
+            response = helper.requests.Response()
+            response.status_code = 412
+            response.url = "https://api.bilibili.com/x/player/wbi/playurl"
+            raise helper.requests.HTTPError(response=response)
+        return DummyResponse({"code": 0, "data": {"dash": {}}})
+
+    client.r = fake_request
+    client.sign = lambda params: {**params, "wts": 1, "w_rid": "signed"}
+
+    result = client.j(
+        "https://api.bilibili.com/x/player/wbi/playurl",
+        {"bvid": "BV1x", "cid": 1},
+        sig=True,
+        path=["data"],
+    )
+
+    assert result == {"dash": {}}
+    assert "w_rid" in calls[0]
+    assert calls[1] == {"bvid": "BV1x", "cid": 1}
+
+
+def test_bilibili_helper_falls_back_to_legacy_playurl_on_http_412():
+    helper = _load_bilibili_helper()
+    calls = []
+
+    class FakeClient:
+        def j(self, url, p=None, h=None, sig=False, path=None):
+            calls.append((url, sig))
+            if "/wbi/playurl" in url:
+                response = helper.requests.Response()
+                response.status_code = 412
+                response.url = url
+                raise helper.requests.HTTPError(response=response)
+            return {"dash": {"video": [], "audio": []}}
+
+    result = helper.play(
+        FakeClient(),
+        {
+            "type": "video",
+            "bvid": "BV1x",
+            "cid": 1,
+            "ref": "https://www.bilibili.com/video/BV1x",
+        },
+        80,
+    )
+
+    assert result == {"dash": {"video": [], "audio": []}}
+    assert calls == [
+        ("https://api.bilibili.com/x/player/wbi/playurl", True),
+        ("https://api.bilibili.com/x/player/playurl", False),
+    ]
+
+
+def test_bilibili_helper_sign_falls_back_when_anonymous_nav_is_unavailable():
+    helper = _load_bilibili_helper()
+    client = object.__new__(helper.C)
+    client.k = None
+
+    class DummyResponse:
+        def json(self):
+            return {"code": -101, "message": "账号未登录"}
+
+    client.r = lambda *_args, **_kwargs: DummyResponse()
+
+    assert client.sign({"bvid": "BV1x"}) == {"bvid": "BV1x"}
+
+
+def test_bilibili_helper_uses_unsigned_metadata_before_playurl():
+    helper = _load_bilibili_helper()
+    calls = []
+
+    class FakeClient:
+        def expand(self, url):
+            return url
+
+        def j(self, url, p=None, h=None, sig=False, path=None):
+            calls.append((url, p, sig, path))
+            return {
+                "title": "Demo",
+                "bvid": "BV1x",
+                "aid": 1,
+                "pic": "",
+                "pages": [{"cid": 2, "duration": 3, "part": "Demo"}],
+            }
+
+    result = helper.parse_ctx(FakeClient(), "https://www.bilibili.com/video/BV1x")
+
+    assert result["eps"][0]["cid"] == 2
+    assert calls == [
+        (
+            "https://api.bilibili.com/x/web-interface/view",
+            {"bvid": "BV1x"},
+            False,
+            ["data"],
+        )
+    ]
+
+
 def test_bilibili_helper_parses_bangumi_media_md_url():
     helper = _load_bilibili_helper()
     calls = []
@@ -391,6 +537,41 @@ def test_bilibili_helper_falls_back_to_head_unknown_urls_when_validated_mirror_f
     assert out.read_bytes() == b"fallback-bytes"
     assert ("GET", "https://cdn.example/valid") in calls
     assert ("GET", "https://cdn.example/unknown") in calls
+
+
+def test_bilibili_helper_uses_range_probe_when_head_is_unavailable():
+    helper = _load_bilibili_helper()
+    calls = []
+
+    class DummyResponse:
+        headers = {
+            "Content-Type": "video/mp4",
+            "Content-Range": "bytes 0-0/20480",
+            "Content-Length": "1",
+        }
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeClient:
+        def r(self, method, url, **kwargs):
+            calls.append((method, kwargs.get("headers", {})))
+            if method == "HEAD":
+                raise RuntimeError("HEAD unavailable")
+            return DummyResponse()
+
+    valid, unknown = helper._classify_candidate_urls(
+        FakeClient(),
+        ["https://cdn.example/video"],
+        "https://www.bilibili.com/video/BV1x",
+    )
+
+    assert valid == ["https://cdn.example/video"]
+    assert unknown == []
+    assert calls[1][1]["Range"] == "bytes=0-0"
 
 
 def test_bilibili_helper_resolves_cookie_from_new_flag_and_env(monkeypatch):

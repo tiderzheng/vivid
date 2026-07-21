@@ -117,7 +117,7 @@ Linux/macOS:
 
 ## Bilibili Rule
 
-- `Bilibili` 仍然走“直接下载媒体 -> Whisper / OCR”链路，不恢复官方字幕优先
+- `Bilibili` 在 `auto` / `smart` 模式下优先提取官方字幕；无字幕或提取失败时回退到“下载媒体 -> Whisper / OCR”
 - helper 现在支持三层策略：完整 `Cookie` 优先，`SESSDATA` 兼容回退，无凭据时自动补匿名请求画像
 - Vivid 支持二维码登录：`bili-auth-qrcode` 生成二维码，`bili-auth-poll -QrcodeKey ...` 轮询并持久化登录态，`bili-auth-status` 校验，`bili-auth-logout` 注销并清除本地 secret
 - 匿名请求画像包括 `_uuid`、`b_lsid`、`b_nut`、`buvid3`、`buvid4`、`buvid_fp`，由 helper 按 `Bili23` 规则维护；即使完整 `Cookie` 里带了这些旧值，helper 也会刷新覆盖
